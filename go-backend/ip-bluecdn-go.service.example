@@ -1,0 +1,23 @@
+[Unit]
+Description=ip.bluecdn.com Go full-stack service
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/Users/gentpan/projects/ip.bluecdn.com/go-backend
+Environment=PORT=18080
+Environment=PROJECT_ROOT=/Users/gentpan/projects/ip.bluecdn.com
+Environment=IP2R_V4_DB=/Users/gentpan/projects/ip.bluecdn.com/data/high_full.xdb
+Environment=IP2R_V6_DB=/Users/gentpan/projects/ip.bluecdn.com/data/high_full_v6.xdb
+Environment=IP2R_CACHE_POLICY=vectorIndex
+Environment=IP2R_SEARCHERS=20
+Environment=IP2R_VERIFY_DB=true
+Environment=APP_TIMEZONE=Asia/Tashkent
+ExecStart=/Users/gentpan/projects/ip.bluecdn.com/go-backend/backend
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

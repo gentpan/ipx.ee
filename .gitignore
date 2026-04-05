@@ -1,0 +1,11 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+*.log
+*.xdb
+.gocache/
+release/
+go-backend/backend
+node_modules/
+dist/

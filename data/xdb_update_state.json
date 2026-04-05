@@ -1,0 +1,9 @@
+{
+    "daily_attempts": {
+        "2026-02-28": 2
+    },
+    "next_update_at": "2026-03-02 00:00:00",
+    "last_check_at": "2026-02-28 07:15:18",
+    "last_result": "failed",
+    "last_error": "v4: download failed: Could not resolve host: ip2region.net | v6: download failed: Could not resolve host: ip2region.net"
+}
