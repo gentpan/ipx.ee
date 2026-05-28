@@ -1,86 +1,63 @@
-# ip.bluecdn.com Go Full-Stack Deployment
+# ipx.ee Go Backend
 
-当前 Go 服务已同时提供：
+这个后端现在只保留 4 个域名行为：
 
-- 页面路由：`/`、`/ip/{ip}`、`/api`、`/about`、`/contact`
-- API 路由：`/ip`、`/jsonip`、`/geoip`、`/geoip/{ip}`、`/health`
-- 静态资源：`/assets/*`、favicon、`site.webmanifest`
+- `ipx.ee`
+  - `curl ipx.ee` 返回当前连接的公网 IP
+  - 浏览器访问时展示一个极简页面，并自动探测 `v4.ipx.ee` / `v6.ipx.ee`
+- `v4.ipx.ee`
+  - 只返回 IPv4 文本 IP
+- `v6.ipx.ee`
+  - 只返回 IPv6 文本 IP
+- `api.ipx.ee`
+  - `GET /ip` 返回当前访问者的 GeoIP JSON
+  - `GET /{ip-or-domain}` 返回指定 IP 或域名的 GeoIP JSON
 
-并默认开启：
+## 内置默认值
 
-- `Access-Control-Allow-Origin: *`
-- `Access-Control-Allow-Methods: GET, OPTIONS`
+代码里已经直接写入以下默认值，部署时不配环境变量也能跑：
 
-## 环境变量
+- `SITE_HOST=ipx.ee`
+- `API_HOST=api.ipx.ee`
+- `V4_HOST=v4.ipx.ee`
+- `V6_HOST=v6.ipx.ee`
+- `IP_API_ENDPOINT=https://pro.ip-api.com/json/`
+- `IP_API_FIELDS=21180127`
+- `IP_API_LANG=zh-CN`
 
-- `PORT` 默认 `18080`
-- `PROJECT_ROOT` 默认 `..`（用于定位 `assets/`、`data/`）
-- `IP2R_V4_DB` 默认 `${PROJECT_ROOT}/data/high_full.xdb`
-- `IP2R_V6_DB` 默认 `${PROJECT_ROOT}/data/high_full_v6.xdb`
-- `IP2R_CACHE_POLICY` 默认 `vectorIndex`（`file` / `vectorIndex` / `content`）
-- `IP2R_SEARCHERS` 默认 `20`
-- `IP2R_VERIFY_DB` 默认 `true`
-- `APP_TIMEZONE` 默认 `Asia/Tashkent`
+仍然支持通过环境变量覆盖。
 
 ## 构建
 
 ```bash
-cd /Users/gentpan/projects/ip.bluecdn.com/go-backend
-GOCACHE=/Users/gentpan/projects/ip.bluecdn.com/.gocache go build -o backend .
+cd /Users/gentpan/projects/ipx.ee/go-backend
+go build -o backend .
 ```
 
-## 本地运行
+## 运行
 
 ```bash
-cd /Users/gentpan/projects/ip.bluecdn.com/go-backend
+cd /Users/gentpan/projects/ipx.ee/go-backend
 PORT=18080 \
-PROJECT_ROOT=/Users/gentpan/projects/ip.bluecdn.com \
-IP2R_V4_DB=/Users/gentpan/projects/ip.bluecdn.com/data/high_full.xdb \
-IP2R_V6_DB=/Users/gentpan/projects/ip.bluecdn.com/data/high_full_v6.xdb \
-IP2R_CACHE_POLICY=vectorIndex \
-IP2R_SEARCHERS=20 \
-IP2R_VERIFY_DB=true \
-APP_TIMEZONE=Asia/Tashkent \
+PROJECT_ROOT=/Users/gentpan/projects/ipx.ee \
 ./backend
 ```
 
-## systemd
+## DNS
 
-拷贝 `ip-bluecdn-go.service.example` 到 `/etc/systemd/system/ip-bluecdn-go.service`，然后：
+- `ipx.ee` 配 `A + AAAA`
+- `api.ipx.ee` 配 `A + AAAA`
+- `v4.ipx.ee` 只配 `A`
+- `v6.ipx.ee` 只配 `AAAA`
 
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable ip-bluecdn-go
-sudo systemctl restart ip-bluecdn-go
-sudo systemctl status ip-bluecdn-go
-```
-
-## 宝塔 / Nginx 反代（整站走 Go）
-
-站点配置中保留证书与域名监听，把 `location /` 改为反代到 Go：
-
-```nginx
-location / {
-  proxy_pass http://127.0.0.1:18080;
-  proxy_http_version 1.1;
-  proxy_set_header Host $host;
-  proxy_set_header X-Real-IP $remote_addr;
-  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-  proxy_set_header X-Forwarded-Proto $scheme;
-}
-```
-
-## 验证
+## API 示例
 
 ```bash
-curl -i https://ip.bluecdn.com/health
-curl -i https://ip.bluecdn.com/ip
-curl -i https://ip.bluecdn.com/jsonip
-curl -i https://ip.bluecdn.com/geoip/8.8.8.8
-curl -i https://ip.bluecdn.com/api
+curl ipx.ee
+curl v4.ipx.ee
+curl v6.ipx.ee
+curl https://api.ipx.ee/ip
+curl https://api.ipx.ee/24.48.0.1
+curl https://api.ipx.ee/example.com
+curl https://api.ipx.ee/24.48.0.1
 ```
-
-## 说明
-
-- 现在页面和 API 都由 Go 直接提供，不再依赖 PHP 页面渲染。
-- `scripts/xdb_auto_update.php` 仍可继续用于 xdb 文件自动更新（不影响 Go 服务读取）。

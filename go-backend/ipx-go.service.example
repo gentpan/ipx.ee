@@ -1,0 +1,17 @@
+[Unit]
+Description=ipx.ee Go service
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/Users/gentpan/projects/ipx.ee/go-backend
+Environment=PORT=18080
+Environment=PROJECT_ROOT=/Users/gentpan/projects/ipx.ee
+ExecStart=/Users/gentpan/projects/ipx.ee/go-backend/backend
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

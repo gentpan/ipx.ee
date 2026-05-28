@@ -4,22 +4,20 @@ declare(strict_types=1);
 
 if (!function_exists('renderSiteFooter')) {
     /**
-     * @param array{updated_at:string,next_update_at:string} $xdbMeta
+     * @param array{provider:string,note:string} $geoSource
      */
-    function renderSiteFooter(array $endpoints, array $xdbMeta, int $year): string
+    function renderSiteFooter(array $endpoints, array $geoSource, int $year): string
     {
-        $metaUpdated = htmlspecialchars((string)($xdbMeta['updated_at'] ?? '—'), ENT_QUOTES, 'UTF-8');
-        $nextUpdateAt = htmlspecialchars((string)($xdbMeta['next_update_at'] ?? '—'), ENT_QUOTES, 'UTF-8');
+        $provider = htmlspecialchars((string)($geoSource['provider'] ?? 'GeoIP provider'), ENT_QUOTES, 'UTF-8');
+        $note = htmlspecialchars((string)($geoSource['note'] ?? ''), ENT_QUOTES, 'UTF-8');
 
         return <<<HTML
     <section class="footer">
       <div class="xdb-meta xdb-meta-official">
-        <span class="xdb-meta-label">官方数据更新公告</span>
-        <span class="xdb-note">当前使用 <b>ip2region 付费版数据库</b></span>
+        <span class="xdb-meta-label">GeoIP 数据源</span>
+        <span class="xdb-note">当前使用 <b>{$provider}</b></span>
         <span class="xdb-sep">·</span>
-        <span>上次更新日期：<b>{$metaUpdated}</b></span>
-        <span class="xdb-sep">·</span>
-        <span>下次更新日期：<b>{$nextUpdateAt}</b></span>
+        <span>{$note}</span>
       </div>
     </section>
 

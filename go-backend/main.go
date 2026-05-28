@@ -1,129 +1,108 @@
 package main
 
 import (
+	"crypto/sha1"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
-	"log"
+	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+)
 
-	"github.com/lionsoul2014/ip2region/binding/golang/service"
-	"github.com/lionsoul2014/ip2region/binding/golang/xdb"
+const (
+	defaultSiteHost      = "ipx.ee"
+	defaultAPIHost       = "api.ipx.ee"
+	defaultV4Host        = "v4.ipx.ee"
+	defaultV6Host        = "v6.ipx.ee"
+	defaultPort          = "18080"
+	defaultIPAPIEndpoint = "https://pro.ip-api.com/json/"
+	defaultIPAPIKey      = "Yl1qHz5nPSptyfw"
+	defaultIPAPIFields   = "21180127"
+	defaultIPAPILang     = "zh-CN"
+	defaultGeoHTTPTimout = 5
+	defaultGeoCacheTTL   = 86400
+	geoCacheSchema       = 6
 )
 
 type app struct {
-	ip2r       *service.Ip2Region
-	port       string
-	projectDir string
-	tz         *time.Location
+	siteHost string
+	apiHost  string
+	v4Host   string
+	v6Host   string
+	port     string
+	geo      *geoIPClient
 }
 
-type footerMeta struct {
-	UpdatedAt    string
-	NextUpdateAt string
+type geoIPClient struct {
+	httpClient *http.Client
+	endpoint   string
+	apiKey     string
+	fields     string
+	lang       string
+	cacheDir   string
+	cacheTTL   time.Duration
+}
+
+type geoCacheEntry struct {
+	Schema    int        `json:"schema"`
+	FetchedAt int64      `json:"fetched_at"`
+	ExpiresAt int64      `json:"expires_at"`
+	Data      geoPayload `json:"data"`
+}
+
+type geoPayload struct {
+	IP          string   `json:"ip"`
+	Lookup      string   `json:"lookup"`
+	ASN         string   `json:"asn"`
+	ASName      string   `json:"as_name"`
+	ISP         string   `json:"isp"`
+	Org         string   `json:"org"`
+	IsProxy     *bool    `json:"is_proxy"`
+	IsHosting   *bool    `json:"is_hosting"`
+	IsMobile    *bool    `json:"is_mobile"`
+	Country     string   `json:"country"`
+	CountryCode string   `json:"country_code"`
+	Province    string   `json:"province"`
+	City        string   `json:"city"`
+	Latitude    *float64 `json:"latitude"`
+	Longitude   *float64 `json:"longitude"`
+	Flag        string   `json:"flag"`
 }
 
 type pageData struct {
-	Lang           string
-	Title          string
-	Description    string
-	ActiveNav      string
-	Year           int
-	FooterMeta     footerMeta
-	FieldsJSON     template.JS
-	InitialGeoJSON template.JS
-	InitialQueryIP template.JS
-	QueryIP        string
-	StatusText     string
-	QueryHeading   string
+	SiteHost    string
+	APIHost     string
+	V4Host      string
+	V6Host      string
+	LookupQuery string
 }
 
 func main() {
-	port := envOr("PORT", "18080")
-	projectDir := envOr("PROJECT_ROOT", "..")
-	projectDir, _ = filepath.Abs(projectDir)
+	projectRoot := envOr("PROJECT_ROOT", "..")
+	projectRoot, _ = filepath.Abs(projectRoot)
 
-	v4DB := envOr("IP2R_V4_DB", filepath.Join(projectDir, "data", "high_full.xdb"))
-	v6DB := envOr("IP2R_V6_DB", filepath.Join(projectDir, "data", "high_full_v6.xdb"))
-	cachePolicy := parseCachePolicy(envOr("IP2R_CACHE_POLICY", "vectorIndex"))
-	poolSize := parseInt(envOr("IP2R_SEARCHERS", "20"), 20)
-	verify := parseBool(envOr("IP2R_VERIFY_DB", "true"), true)
-
-	tzName := envOr("APP_TIMEZONE", "Asia/Tashkent")
-	tz, err := time.LoadLocation(tzName)
-	if err != nil {
-		tz = time.FixedZone("UTC+5", 5*3600)
+	a := &app{
+		siteHost: normalizeHost(envOr("SITE_HOST", defaultSiteHost)),
+		apiHost:  normalizeHost(envOr("API_HOST", defaultAPIHost)),
+		v4Host:   normalizeHost(envOr("V4_HOST", defaultV4Host)),
+		v6Host:   normalizeHost(envOr("V6_HOST", defaultV6Host)),
+		port:     envOr("PORT", defaultPort),
+		geo:      newGeoIPClient(projectRoot),
 	}
-
-	if verify {
-		if err := xdb.VerifyFromFile(v4DB); err != nil {
-			log.Fatalf("verify v4 xdb failed: %v", err)
-		}
-		if err := xdb.VerifyFromFile(v6DB); err != nil {
-			log.Fatalf("verify v6 xdb failed: %v", err)
-		}
-	}
-
-	v4Config, err := service.NewV4Config(cachePolicy, v4DB, poolSize)
-	if err != nil {
-		log.Fatalf("create v4 config failed: %v", err)
-	}
-	v6Config, err := service.NewV6Config(cachePolicy, v6DB, poolSize)
-	if err != nil {
-		log.Fatalf("create v6 config failed: %v", err)
-	}
-
-	ip2r, err := service.NewIp2Region(v4Config, v6Config)
-	if err != nil {
-		log.Fatalf("create ip2region service failed: %v", err)
-	}
-	defer ip2r.Close()
-
-	a := &app{ip2r: ip2r, port: port, projectDir: projectDir, tz: tz}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/", a.handleRequest)
 
-	// API routes
-	mux.HandleFunc("/ip", a.handleIP)
-	mux.HandleFunc("/jsonip", a.handleJSONIP)
-	mux.HandleFunc("/geoip", a.handleGeoIP)
-	mux.HandleFunc("/geoip/", a.handleGeoIPByIP)
-	mux.HandleFunc("/health", a.handleHealth)
-
-	// Page routes
-	mux.HandleFunc("/api", a.handleAPIPage)
-	mux.HandleFunc("/about", a.handleAboutPage)
-	mux.HandleFunc("/contact", a.handleContactPage)
-	mux.HandleFunc("/ip/", a.handleHomeByIP)
-	mux.HandleFunc("/", a.handleHome)
-
-	// Static files
-	assetsDir := filepath.Join(projectDir, "assets")
-	if st, err := os.Stat(assetsDir); err == nil && st.IsDir() {
-		mux.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.Dir(assetsDir))))
-	}
-
-	for _, p := range []string{
-		"/favicon.ico",
-		"/favicon-16x16.png",
-		"/favicon-32x32.png",
-		"/apple-touch-icon.png",
-		"/android-chrome-192x192.png",
-		"/android-chrome-512x512.png",
-		"/site.webmanifest",
-	} {
-		mux.HandleFunc(p, a.handleStaticFile)
-	}
-
-	srv := &http.Server{
-		Addr:              ":" + port,
+	server := &http.Server{
+		Addr:              ":" + a.port,
 		Handler:           withCORS(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
@@ -131,18 +110,59 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	log.Printf("go server listening on :%s", port)
-	log.Printf("xdb v4=%s v6=%s cache=%s pool=%d", v4DB, v6DB, envOr("IP2R_CACHE_POLICY", "vectorIndex"), poolSize)
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatal(err)
+	fmt.Printf("ipx.ee service listening on :%s\n", a.port)
+	fmt.Printf("hosts: site=%s api=%s v4=%s v6=%s\n", a.siteHost, a.apiHost, a.v4Host, a.v6Host)
+	fmt.Printf("geo upstream=%s fields=%s cache=%s ttl=%s\n", a.geo.endpoint, a.geo.fields, a.geo.cacheDir, a.geo.cacheTTL)
+
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		panic(err)
+	}
+}
+
+func newGeoIPClient(projectRoot string) *geoIPClient {
+	timeoutSeconds := parseInt(envOr("GEOIP_HTTP_TIMEOUT", strconv.Itoa(defaultGeoHTTPTimout)), defaultGeoHTTPTimout)
+	cacheTTLSeconds := parseInt(envOr("GEOIP_CACHE_TTL", strconv.Itoa(defaultGeoCacheTTL)), defaultGeoCacheTTL)
+	endpoint := strings.TrimSpace(envOr("IP_API_ENDPOINT", defaultIPAPIEndpoint))
+	apiKey := strings.TrimSpace(envOr("IP_API_KEY", defaultIPAPIKey))
+	fields := strings.TrimSpace(envOr("IP_API_FIELDS", defaultIPAPIFields))
+	lang := strings.TrimSpace(envOr("IP_API_LANG", defaultIPAPILang))
+
+	if fields == "" {
+		fields = defaultIPAPIFields
+	}
+	if lang == "" {
+		lang = defaultIPAPILang
+	}
+
+	return &geoIPClient{
+		httpClient: &http.Client{
+			Timeout: time.Duration(maxInt(2, timeoutSeconds)) * time.Second,
+		},
+		endpoint: strings.TrimRight(endpoint, "/") + "/",
+		apiKey:   apiKey,
+		fields:   fields,
+		lang:     lang,
+		cacheDir: envOr("GEOIP_CACHE_DIR", filepath.Join(projectRoot, "data", "geoip-cache")),
+		cacheTTL: time.Duration(maxInt(60, cacheTTLSeconds)) * time.Second,
 	}
 }
 
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Requested-With")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+		w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Type")
+		w.Header().Set("Access-Control-Max-Age", "86400")
+		w.Header().Set("Cross-Origin-Resource-Policy", "cross-origin")
+
+		requestHeaders := strings.TrimSpace(r.Header.Get("Access-Control-Request-Headers"))
+		if requestHeaders != "" {
+			w.Header().Set("Access-Control-Allow-Headers", requestHeaders)
+			w.Header().Add("Vary", "Access-Control-Request-Headers")
+		} else {
+			w.Header().Set("Access-Control-Allow-Headers", "Accept, Authorization, Content-Type, Origin, X-Requested-With")
+		}
+
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -151,26 +171,348 @@ func withCORS(next http.Handler) http.Handler {
 	})
 }
 
-func (a *app) handleStaticFile(w http.ResponseWriter, r *http.Request) {
-	cleanPath := filepath.Clean(strings.TrimPrefix(r.URL.Path, "/"))
-	if cleanPath == "." || strings.Contains(cleanPath, "..") {
+func (a *app) handleRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if r.URL.Path == "/health" {
+		jsonResponse(w, map[string]any{"ok": true}, http.StatusOK)
+		return
+	}
+
+	host := normalizeHost(r.Host)
+	switch host {
+	case a.apiHost:
+		a.handleAPIHost(w, r)
+	case a.v4Host, a.v6Host:
+		a.handleIPOnlyHost(w, r)
+	default:
+		a.handleSiteHost(w, r)
+	}
+}
+
+func (a *app) handleSiteHost(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/" {
+		if q := strings.TrimSpace(r.URL.Query().Get("q")); q != "" {
+			q = strings.Trim(strings.TrimSpace(decodePathValue(q)), "/")
+			if q != "" {
+				http.Redirect(w, r, "/"+url.PathEscape(q), http.StatusFound)
+				return
+			}
+		}
+
+		clientIP := getClientIP(r)
+		if isCLIRequest(r) {
+			textResponse(w, clientIP, http.StatusOK)
+			return
+		}
+
+		data := pageData{
+			SiteHost: a.siteHost,
+			APIHost:  a.apiHost,
+			V4Host:   a.v4Host,
+			V6Host:   a.v6Host,
+		}
+		htmlResponse(w, renderTemplate(siteTemplate, data), http.StatusOK)
+		return
+	}
+
+	query := strings.Trim(strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/")), "/")
+	query = decodePathValue(query)
+	if query == "" || strings.Contains(query, "/") {
 		http.NotFound(w, r)
 		return
 	}
-	full := filepath.Join(a.projectDir, cleanPath)
-	if st, err := os.Stat(full); err != nil || st.IsDir() {
+
+	if isCLIRequest(r) {
+		a.respondGeoLookup(w, query, query)
+		return
+	}
+
+	data := pageData{
+		SiteHost:    a.siteHost,
+		APIHost:     a.apiHost,
+		V4Host:      a.v4Host,
+		V6Host:      a.v6Host,
+		LookupQuery: query,
+	}
+	htmlResponse(w, renderTemplate(siteTemplate, data), http.StatusOK)
+}
+
+func (a *app) handleIPOnlyHost(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
 		http.NotFound(w, r)
 		return
 	}
-	http.ServeFile(w, r, full)
+
+	wantsJSON := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("format")), "json")
+	clientIP := getClientIP(r)
+	if clientIP == "" {
+		if wantsJSON {
+			jsonResponse(w, map[string]any{"error": "Unable to detect client IP"}, http.StatusBadRequest)
+			return
+		}
+		textResponse(w, "", http.StatusBadRequest)
+		return
+	}
+
+	expectedFamily := a.expectedProbeFamily(normalizeHost(r.Host))
+	if expectedFamily != "" && ipFamily(clientIP) != expectedFamily {
+		if wantsJSON {
+			jsonResponse(w, map[string]any{
+				"error":           strings.ToUpper(expectedFamily) + " unavailable",
+				"expected_family": expectedFamily,
+				"detected_family": ipFamily(clientIP),
+			}, http.StatusConflict)
+			return
+		}
+		textResponse(w, strings.ToUpper(expectedFamily)+" unavailable", http.StatusConflict)
+		return
+	}
+
+	if wantsJSON {
+		a.respondGeoLookup(w, clientIP, clientIP)
+		return
+	}
+
+	textResponse(w, clientIP, http.StatusOK)
+}
+
+func (a *app) handleAPIHost(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case r.URL.Path == "/":
+		jsonResponse(w, map[string]any{
+			"service": "ipx.ee api",
+			"routes": []string{
+				"/ip",
+				"/{ip-or-domain}",
+				"/health",
+			},
+		}, http.StatusOK)
+		return
+	case r.URL.Path == "/ip":
+		clientIP := getClientIP(r)
+		if clientIP == "" {
+			jsonResponse(w, map[string]any{"error": "Unable to detect client IP"}, http.StatusBadRequest)
+			return
+		}
+		a.respondGeoLookup(w, clientIP, clientIP)
+		return
+	case strings.HasPrefix(r.URL.Path, "/ip/"):
+		query := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/ip/"))
+		query = decodePathValue(query)
+		if query == "" {
+			jsonResponse(w, map[string]any{"error": "Missing query"}, http.StatusBadRequest)
+			return
+		}
+		a.respondGeoLookup(w, query, query)
+		return
+	case r.URL.Path != "/":
+		query := strings.TrimPrefix(r.URL.Path, "/")
+		query = decodePathValue(query)
+		if query == "" {
+			http.NotFound(w, r)
+			return
+		}
+		a.respondGeoLookup(w, query, query)
+		return
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (a *app) respondGeoLookup(w http.ResponseWriter, lookup, fallbackIP string) {
+	data, status, err := a.geo.Lookup(lookup)
+	if err != nil {
+		jsonResponse(w, map[string]any{
+			"error":  err.Error(),
+			"lookup": lookup,
+			"ip":     fallbackIP,
+		}, status)
+		return
+	}
+	jsonResponse(w, data, status)
+}
+
+func (g *geoIPClient) Lookup(query string) (geoPayload, int, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return geoPayload{}, http.StatusBadRequest, errors.New("Missing query")
+	}
+
+	if cached, ok := g.readCache(query); ok {
+		return cached, http.StatusOK, nil
+	}
+
+	req, err := http.NewRequest(http.MethodGet, g.buildURL(query), nil)
+	if err != nil {
+		return geoPayload{}, http.StatusServiceUnavailable, errors.New("GeoIP request build failed")
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "ipx.ee/geoip")
+
+	resp, err := g.httpClient.Do(req)
+	if err != nil {
+		return geoPayload{}, http.StatusServiceUnavailable, errors.New("GeoIP lookup failed")
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return geoPayload{}, http.StatusServiceUnavailable, errors.New("GeoIP lookup failed")
+	}
+
+	var payload map[string]any
+	if strings.TrimSpace(string(body)) != "" {
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return geoPayload{}, http.StatusServiceUnavailable, errors.New("GeoIP lookup returned invalid JSON")
+		}
+	}
+
+	statusText := strings.TrimSpace(toString(payload["status"]))
+	if statusText != "" && statusText != "success" {
+		message := strings.TrimSpace(toString(payload["message"]))
+		if message == "" {
+			message = "GeoIP lookup failed"
+		}
+		return geoPayload{}, statusFromMessage(message), errors.New(message)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return geoPayload{}, http.StatusServiceUnavailable, errors.New("GeoIP lookup failed")
+	}
+	if len(payload) == 0 || !hasGeoPayload(payload) {
+		return geoPayload{}, http.StatusNotFound, errors.New("GeoIP lookup returned no data")
+	}
+
+	data := mapGeoPayload(query, payload)
+	g.writeCache(query, data)
+	return data, http.StatusOK, nil
+}
+
+func (g *geoIPClient) buildURL(query string) string {
+	values := url.Values{}
+	values.Set("key", g.apiKey)
+	values.Set("fields", g.fields)
+	values.Set("lang", g.lang)
+	return g.endpoint + url.PathEscape(query) + "?" + values.Encode()
+}
+
+func (g *geoIPClient) cachePath(query string) string {
+	cacheKey := strings.Join([]string{
+		strings.ToLower(strings.TrimSpace(query)),
+		g.endpoint,
+		g.fields,
+		g.lang,
+	}, "|")
+	sum := sha1.Sum([]byte(cacheKey))
+	return filepath.Join(g.cacheDir, fmt.Sprintf("%x.json", sum))
+}
+
+func (g *geoIPClient) readCache(query string) (geoPayload, bool) {
+	raw, err := os.ReadFile(g.cachePath(query))
+	if err != nil {
+		return geoPayload{}, false
+	}
+
+	var entry geoCacheEntry
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		return geoPayload{}, false
+	}
+	if entry.Schema != geoCacheSchema || entry.ExpiresAt < time.Now().Unix() {
+		return geoPayload{}, false
+	}
+	return entry.Data, true
+}
+
+func (g *geoIPClient) writeCache(query string, data geoPayload) {
+	_ = ensureDir(g.cacheDir)
+	entry := geoCacheEntry{
+		Schema:    geoCacheSchema,
+		FetchedAt: time.Now().Unix(),
+		ExpiresAt: time.Now().Add(g.cacheTTL).Unix(),
+		Data:      data,
+	}
+	body, err := json.MarshalIndent(entry, "", "  ")
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(g.cachePath(query), body, 0o644)
+}
+
+func mapGeoPayload(lookup string, payload map[string]any) geoPayload {
+	ip := strings.TrimSpace(toString(payload["query"]))
+	if ip == "" {
+		ip = lookup
+	}
+	asn := normalizeASN(strings.TrimSpace(toString(payload["as"])))
+	rawASName := strings.TrimSpace(toString(payload["asname"]))
+	isp := strings.TrimSpace(toString(payload["isp"]))
+	org := strings.TrimSpace(toString(payload["org"]))
+	countryCode := strings.ToUpper(strings.TrimSpace(toString(payload["countryCode"])))
+	flag := ""
+	if countryCode != "" {
+		flag = "https://flagcdn.io/" + strings.ToLower(countryCode) + ".svg"
+	}
+
+	return geoPayload{
+		IP:          ip,
+		Lookup:      lookup,
+		ASN:         asn,
+		ASName:      preferredASName(rawASName, org, isp),
+		ISP:         isp,
+		Org:         org,
+		IsProxy:     toBoolPtr(payload["proxy"]),
+		IsHosting:   toBoolPtr(payload["hosting"]),
+		IsMobile:    toBoolPtr(payload["mobile"]),
+		Country:     strings.TrimSpace(toString(payload["country"])),
+		CountryCode: countryCode,
+		Province:    strings.TrimSpace(toString(payload["regionName"])),
+		City:        strings.TrimSpace(toString(payload["city"])),
+		Latitude:    toFloatPtr(payload["lat"]),
+		Longitude:   toFloatPtr(payload["lon"]),
+		Flag:        flag,
+	}
+}
+
+func hasGeoPayload(payload map[string]any) bool {
+	for _, key := range []string{"country", "countryCode", "region", "regionName", "city", "isp", "org", "as", "asname", "lat", "lon"} {
+		if strings.TrimSpace(toString(payload[key])) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func statusFromMessage(message string) int {
+	switch strings.ToLower(strings.TrimSpace(message)) {
+	case "private range", "reserved range", "invalid query":
+		return http.StatusBadRequest
+	default:
+		return http.StatusServiceUnavailable
+	}
 }
 
 func getClientIP(r *http.Request) string {
+	if cfip := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cfip != "" {
+		if net.ParseIP(cfip) != nil {
+			return normalizeIP(cfip)
+		}
+	}
+
+	if trueClientIP := strings.TrimSpace(r.Header.Get("True-Client-IP")); trueClientIP != "" {
+		if net.ParseIP(trueClientIP) != nil {
+			return normalizeIP(trueClientIP)
+		}
+	}
+
 	if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
 		parts := strings.Split(xff, ",")
-		ip := strings.TrimSpace(parts[0])
-		if net.ParseIP(ip) != nil {
-			return normalizeIP(ip)
+		candidate := strings.TrimSpace(parts[0])
+		if net.ParseIP(candidate) != nil {
+			return normalizeIP(candidate)
 		}
 	}
 
@@ -184,8 +526,10 @@ func getClientIP(r *http.Request) string {
 	if err == nil && net.ParseIP(host) != nil {
 		return normalizeIP(host)
 	}
-	if net.ParseIP(strings.TrimSpace(r.RemoteAddr)) != nil {
-		return normalizeIP(strings.TrimSpace(r.RemoteAddr))
+
+	raw := strings.TrimSpace(r.RemoteAddr)
+	if net.ParseIP(raw) != nil {
+		return normalizeIP(raw)
 	}
 	return ""
 }
@@ -201,211 +545,115 @@ func normalizeIP(ip string) string {
 	return ip
 }
 
-func ipVersion(ip string) int {
-	parsed := net.ParseIP(strings.TrimSpace(ip))
-	if parsed == nil {
-		return 0
+func (a *app) expectedProbeFamily(host string) string {
+	switch host {
+	case a.v4Host:
+		return "ipv4"
+	case a.v6Host:
+		return "ipv6"
+	default:
+		return ""
 	}
-	if parsed.To4() != nil {
-		return 4
-	}
-	return 6
 }
 
-func isCLILikeRequest(r *http.Request) bool {
-	ua := strings.ToLower(strings.TrimSpace(r.UserAgent()))
-	if ua == "" {
-		return false
+func ipFamily(ip string) string {
+	parsed := net.ParseIP(strings.TrimSpace(ip))
+	if parsed == nil {
+		return ""
 	}
-	sigs := []string{"curl/", "wget/", "httpie/", "python-requests/", "powershell/", "go-http-client/"}
-	for _, s := range sigs {
-		if strings.Contains(ua, s) {
+	if parsed.To4() != nil {
+		return "ipv4"
+	}
+	return "ipv6"
+}
+
+func normalizeHost(host string) string {
+	host = strings.TrimSpace(strings.ToLower(host))
+	if strings.Contains(host, ":") {
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+	}
+	return strings.TrimSuffix(host, ".")
+}
+
+func decodePathValue(v string) string {
+	decoded, err := url.PathUnescape(v)
+	if err != nil {
+		return v
+	}
+	return strings.TrimSpace(decoded)
+}
+
+func isCLIRequest(r *http.Request) bool {
+	ua := strings.ToLower(strings.TrimSpace(r.UserAgent()))
+	for _, sig := range []string{"curl/", "wget/", "httpie/", "python-requests/", "powershell/", "go-http-client/"} {
+		if strings.Contains(ua, sig) {
 			return true
 		}
 	}
 	return false
 }
 
-func buildRootCliIPSummary(ip string) string {
-	return strings.TrimSpace(ip)
+func normalizeASN(v string) string {
+	parts := strings.Fields(strings.TrimSpace(v))
+	if len(parts) == 0 {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToUpper(parts[0]), "AS") {
+		return strings.ToUpper(parts[0])
+	}
+	return parts[0]
 }
 
-func (a *app) handleIP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
+func preferredASName(rawASName, org, isp string) string {
+	rawASName = normalizeEntityName(rawASName)
+	org = normalizeEntityName(org)
+	isp = normalizeEntityName(isp)
+
+	switch {
+	case org != "":
+		return org
+	case isp != "":
+		return isp
+	case rawASName != "":
+		return rawASName
+	default:
+		return ""
 	}
-	ip := getClientIP(r)
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	_, _ = w.Write([]byte(ip + "\n"))
 }
 
-func (a *app) handleJSONIP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	jsonResponse(w, map[string]any{"ip": getClientIP(r)}, http.StatusOK)
+func normalizeEntityName(v string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(v)), " ")
 }
 
-func (a *app) handleGeoIP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
+func toFloatPtr(v any) *float64 {
+	s := strings.TrimSpace(toString(v))
+	if s == "" {
+		return nil
 	}
-	ip := getClientIP(r)
-	if net.ParseIP(ip) == nil {
-		jsonResponse(w, map[string]any{"error": "Invalid IP address", "input": ip}, http.StatusBadRequest)
-		return
-	}
-
-	data, status := a.queryGeoIP(ip)
-	if status != http.StatusOK {
-		jsonResponse(w, data, status)
-		return
-	}
-
-	if field := strings.TrimSpace(r.URL.Query().Get("field")); field != "" {
-		filtered, err := filterGeoipByField(data, field)
-		if err != nil {
-			jsonResponse(w, map[string]any{"error": "Invalid field", "field": field, "available_fields": queryableFields()}, http.StatusBadRequest)
-			return
-		}
-		jsonResponse(w, filtered, http.StatusOK)
-		return
-	}
-	jsonResponse(w, data, http.StatusOK)
-}
-
-func (a *app) handleGeoIPByIP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	ip := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/geoip/"))
-	if ip == "" || net.ParseIP(ip) == nil {
-		jsonResponse(w, map[string]any{"error": "Invalid IP address", "input": ip}, http.StatusBadRequest)
-		return
-	}
-
-	data, status := a.queryGeoIP(ip)
-	if status != http.StatusOK {
-		jsonResponse(w, data, status)
-		return
-	}
-
-	if field := strings.TrimSpace(r.URL.Query().Get("field")); field != "" {
-		filtered, err := filterGeoipByField(data, field)
-		if err != nil {
-			jsonResponse(w, map[string]any{"error": "Invalid field", "field": field, "available_fields": queryableFields()}, http.StatusBadRequest)
-			return
-		}
-		jsonResponse(w, filtered, http.StatusOK)
-		return
-	}
-	jsonResponse(w, data, http.StatusOK)
-}
-
-func (a *app) queryGeoIP(ip string) (map[string]any, int) {
-	region, err := a.ip2r.SearchByStr(ip)
+	f, err := strconv.ParseFloat(s, 64)
 	if err != nil {
-		return map[string]any{"error": "GeoIP lookup failed", "detail": err.Error(), "input": ip}, http.StatusInternalServerError
+		return nil
 	}
-	if strings.TrimSpace(region) == "" {
-		return map[string]any{"ip": ip}, http.StatusOK
-	}
-	return parseRegion(ip, region), http.StatusOK
+	return &f
 }
 
-func parseRegion(ip, region string) map[string]any {
-	parts := strings.Split(region, "|")
-	for len(parts) < 17 {
-		parts = append(parts, "")
+func toBoolPtr(v any) *bool {
+	s := strings.TrimSpace(strings.ToLower(toString(v)))
+	if s == "" {
+		return nil
 	}
-	clean := func(v string) string {
-		v = strings.TrimSpace(v)
-		if v == "" || v == "0" {
-			return ""
-		}
-		return v
+	switch s {
+	case "true", "1":
+		v := true
+		return &v
+	case "false", "0":
+		v := false
+		return &v
+	default:
+		return nil
 	}
-	toFloat := func(v string) any {
-		v = strings.TrimSpace(v)
-		if v == "" || v == "0" {
-			return nil
-		}
-		f, err := strconv.ParseFloat(v, 64)
-		if err != nil {
-			return nil
-		}
-		return f
-	}
-
-	return map[string]any{
-		"ip":           ip,
-		"continent":    clean(parts[0]),
-		"country":      clean(parts[1]),
-		"province":     clean(parts[2]),
-		"city":         clean(parts[3]),
-		"district":     clean(parts[4]),
-		"isp":          clean(parts[5]),
-		"longitude":    toFloat(parts[6]),
-		"latitude":     toFloat(parts[7]),
-		"area_code":    clean(parts[8]),
-		"phone_code":   clean(parts[9]),
-		"zip_code":     clean(parts[10]),
-		"timezone":     clean(parts[11]),
-		"currency":     clean(parts[12]),
-		"asn":          clean(parts[13]),
-		"country_code": clean(parts[16]),
-	}
-}
-
-func queryableFields() []string {
-	return []string{
-		"ip", "continent", "country", "country_code", "province", "city", "district", "isp", "asn",
-		"longitude", "latitude", "timezone", "currency", "area_code", "phone_code", "zip_code",
-	}
-}
-
-func filterGeoipByField(data map[string]any, field string) (map[string]any, error) {
-	field = strings.TrimSpace(field)
-	if field == "" {
-		return data, nil
-	}
-	requested := make([]string, 0, 8)
-	seen := map[string]bool{}
-	for _, raw := range strings.Split(field, ",") {
-		f := strings.TrimSpace(raw)
-		if f == "" || seen[f] {
-			continue
-		}
-		seen[f] = true
-		requested = append(requested, f)
-	}
-	if len(requested) == 0 {
-		return data, nil
-	}
-	allowed := map[string]bool{}
-	for _, f := range queryableFields() {
-		allowed[f] = true
-	}
-	for _, f := range requested {
-		if !allowed[f] {
-			return nil, errors.New("invalid field")
-		}
-	}
-	if len(requested) == 1 && requested[0] == "ip" {
-		return map[string]any{"ip": toString(data["ip"])}, nil
-	}
-	resp := map[string]any{"ip": toString(data["ip"])}
-	for _, f := range requested {
-		if f == "ip" {
-			continue
-		}
-		resp[f] = data[f]
-	}
-	return resp, nil
 }
 
 func toString(v any) string {
@@ -415,227 +663,36 @@ func toString(v any) string {
 	return fmt.Sprint(v)
 }
 
-func (a *app) handleHealth(w http.ResponseWriter, r *http.Request) {
-	jsonResponse(w, map[string]any{"ok": true}, http.StatusOK)
+func parseInt(v string, fallback int) int {
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n <= 0 {
+		return fallback
+	}
+	return n
 }
 
-func (a *app) handleHome(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
+func maxInt(a, b int) int {
+	if a > b {
+		return a
 	}
-	clientIP := getClientIP(r)
-	if isCLILikeRequest(r) {
-		textResponse(w, buildRootCliIPSummary(clientIP), http.StatusOK)
-		return
-	}
-	a.renderHomePage(w, "", "home", clientIP)
+	return b
 }
 
-func (a *app) handleHomeByIP(w http.ResponseWriter, r *http.Request) {
-	queryIP := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/ip/"))
-	if queryIP == "" {
-		a.renderHomePage(w, "", "home", getClientIP(r))
-		return
+func ensureDir(path string) error {
+	if path == "" {
+		return nil
 	}
-	decoded := queryIP
-	if d, err := urlPathUnescape(decoded); err == nil {
-		decoded = d
-	}
-	if net.ParseIP(decoded) == nil {
-		a.renderHomePage(w, "", "home", getClientIP(r))
-		return
-	}
-	a.renderHomePage(w, decoded, "home", getClientIP(r))
+	return os.MkdirAll(path, 0o775)
 }
 
-func (a *app) handleAPIPage(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/api" {
-		http.NotFound(w, r)
-		return
+func envOr(key, fallback string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
 	}
-	pd := a.basePageData("api", "zh-CN", "API Documentation - ip.Bluecdn.com", "ip.bluecdn.com API 文档")
-	htmlResponse(w, renderAPIPage(pd), http.StatusOK)
+	return fallback
 }
 
-func (a *app) handleAboutPage(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/about" {
-		http.NotFound(w, r)
-		return
-	}
-	pd := a.basePageData("about", "zh-CN", "About - ip.Bluecdn.com", "关于 ip.bluecdn.com")
-	htmlResponse(w, renderAboutPage(pd), http.StatusOK)
-}
-
-func (a *app) handleContactPage(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/contact" {
-		http.NotFound(w, r)
-		return
-	}
-	pd := a.basePageData("contact", "zh-CN", "Contact - ip.Bluecdn.com", "联系 ip.bluecdn.com")
-	htmlResponse(w, renderContactPage(pd), http.StatusOK)
-}
-
-func (a *app) renderHomePage(w http.ResponseWriter, queryIP, activeNav, clientIP string) {
-	initialIP := clientIP
-	if queryIP != "" {
-		initialIP = queryIP
-	}
-	initialData, _ := a.queryGeoIP(initialIP)
-	if initialData == nil {
-		initialData = map[string]any{"ip": initialIP}
-	}
-
-	fields := []map[string]string{
-		{"key": "ip", "label": "IP 地址"},
-		{"key": "asn", "label": "ASN"},
-		{"key": "isp", "label": "ISP"},
-		{"key": "country", "label": "国家/代码"},
-		{"key": "province", "label": "省"},
-		{"key": "city", "label": "市"},
-		{"key": "district", "label": "区"},
-		{"key": "longitude", "label": "经度"},
-		{"key": "latitude", "label": "纬度"},
-		{"key": "timezone", "label": "时区"},
-		{"key": "currency", "label": "货币"},
-		{"key": "continent", "label": "大洲"},
-		{"key": "area_code", "label": "行政区划代码"},
-		{"key": "phone_code", "label": "电话区号"},
-		{"key": "zip_code", "label": "邮政编码"},
-	}
-
-	fieldsJSON := mustJSON(fields)
-	initialGeoJSON := mustJSON(initialData)
-	initialQueryJSON := "null"
-	status := "正在识别本机 IPv4 / IPv6 ..."
-	if queryIP != "" {
-		initialQueryJSON = mustJSONString(queryIP)
-		status = "查询成功：/geoip/" + queryIP
-	}
-
-	pd := a.basePageData(activeNav, "zh-CN", "IP Address Lookup / IPv4 / IPv6  - ip.Bluecdn.com", "IPv4 Address Lookup, IPv6 Address Lookup")
-	pd.FieldsJSON = template.JS(fieldsJSON)
-	pd.InitialGeoJSON = template.JS(initialGeoJSON)
-	pd.InitialQueryIP = template.JS(initialQueryJSON)
-	pd.QueryIP = queryIP
-	pd.StatusText = status
-	pd.QueryHeading = "IP 地理查询"
-
-	htmlResponse(w, renderHomePage(pd), http.StatusOK)
-}
-
-func (a *app) basePageData(activeNav, lang, title, desc string) pageData {
-	now := time.Now().In(a.tz)
-	meta := a.loadFooterMeta(now)
-	return pageData{
-		Lang:        lang,
-		Title:       title,
-		Description: desc,
-		ActiveNav:   activeNav,
-		Year:        now.Year(),
-		FooterMeta:  meta,
-	}
-}
-
-func (a *app) loadFooterMeta(now time.Time) footerMeta {
-	updatedAt := "—"
-	nextAt := nextMonthlyAt(now, 2, 0, 0).Format("2006-01-02 15:04:05")
-
-	stateFile := filepath.Join(a.projectDir, "data", "xdb_update_state.json")
-	raw, err := os.ReadFile(stateFile)
-	if err == nil {
-		var st map[string]any
-		if json.Unmarshal(raw, &st) == nil {
-			if v := strings.TrimSpace(toString(st["last_success_at"])); v != "" {
-				updatedAt = parseTimeLike(v, a.tz)
-			}
-			if v := strings.TrimSpace(toString(st["next_update_at"])); v != "" {
-				nextAt = parseTimeLike(v, a.tz)
-			}
-		}
-	}
-
-	if updatedAt == "—" {
-		cacheFile := filepath.Join(a.projectDir, "data", "xdb_meta_cache.json")
-		if raw2, err2 := os.ReadFile(cacheFile); err2 == nil {
-			var meta map[string]any
-			if json.Unmarshal(raw2, &meta) == nil {
-				if v := strings.TrimSpace(toString(meta["updated_at"])); v != "" {
-					updatedAt = parseTimeLike(v, a.tz)
-				}
-			}
-		}
-	}
-
-	if updatedAt == "—" {
-		v4 := fileMTime(filepath.Join(a.projectDir, "data", "high_full.xdb"))
-		v6 := fileMTime(filepath.Join(a.projectDir, "data", "high_full_v6.xdb"))
-		last := v4
-		if v6.After(last) {
-			last = v6
-		}
-		if !last.IsZero() {
-			updatedAt = last.In(a.tz).Format("2006-01-02 15:04:05")
-		}
-	}
-
-	return footerMeta{UpdatedAt: updatedAt, NextUpdateAt: nextAt}
-}
-
-func fileMTime(path string) time.Time {
-	st, err := os.Stat(path)
-	if err != nil {
-		return time.Time{}
-	}
-	return st.ModTime()
-}
-
-func nextMonthlyAt(now time.Time, day, hour, minute int) time.Time {
-	if day < 1 {
-		day = 1
-	}
-	if day > 28 {
-		day = 28
-	}
-	this := time.Date(now.Year(), now.Month(), day, hour, minute, 0, 0, now.Location())
-	if now.Before(this) {
-		return this
-	}
-	n := now.AddDate(0, 1, 0)
-	return time.Date(n.Year(), n.Month(), day, hour, minute, 0, 0, now.Location())
-}
-
-func parseTimeLike(v string, loc *time.Location) string {
-	v = strings.TrimSpace(v)
-	if v == "" {
-		return "—"
-	}
-	if _, err := strconv.ParseInt(v, 10, 64); err == nil {
-		ts, _ := strconv.ParseInt(v, 10, 64)
-		if ts > 0 {
-			return time.Unix(ts, 0).In(loc).Format("2006-01-02 15:04:05")
-		}
-	}
-	if t, err := time.ParseInLocation("2006-01-02 15:04:05", v, loc); err == nil {
-		return t.Format("2006-01-02 15:04:05")
-	}
-	if t, err := time.Parse(time.RFC3339, v); err == nil {
-		return t.In(loc).Format("2006-01-02 15:04:05")
-	}
-	return v
-}
-
-func mustJSON(v any) string {
-	b, _ := json.Marshal(v)
-	return string(b)
-}
-
-func mustJSONString(v string) string {
-	b, _ := json.Marshal(v)
-	return string(b)
-}
-
-func jsonResponse(w http.ResponseWriter, data map[string]any, status int) {
+func jsonResponse(w http.ResponseWriter, data any, status int) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	enc := json.NewEncoder(w)
@@ -647,13 +704,13 @@ func jsonResponse(w http.ResponseWriter, data map[string]any, status int) {
 func textResponse(w http.ResponseWriter, text string, status int) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(status)
-	_, _ = w.Write([]byte(text + "\n"))
+	_, _ = w.Write([]byte(strings.TrimSpace(text) + "\n"))
 }
 
-func htmlResponse(w http.ResponseWriter, html string, status int) {
+func htmlResponse(w http.ResponseWriter, body string, status int) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
-	_, _ = w.Write([]byte(html))
+	_, _ = w.Write([]byte(body))
 }
 
 func renderTemplate(tpl string, data any) string {
@@ -663,286 +720,720 @@ func renderTemplate(tpl string, data any) string {
 	return sb.String()
 }
 
-func renderHeader(active string) string {
-	cls := func(name string) string {
-		if active == name {
-			return "nav-link is-active"
-		}
-		return "nav-link"
-	}
-	return renderTemplate(headerTemplate, map[string]any{
-		"HomeClass":    cls("home"),
-		"AboutClass":   cls("about"),
-		"APIClass":     cls("api"),
-		"ContactClass": cls("contact"),
-	})
-}
-
-func renderFooter(pd pageData) string {
-	return renderTemplate(footerTemplate, pd)
-}
-
-func renderHomePage(pd pageData) string {
-	header := renderHeader(pd.ActiveNav)
-	footer := renderFooter(pd)
-	return renderTemplate(homeTemplate, map[string]any{
-		"P":      pd,
-		"Header": template.HTML(header),
-		"Footer": template.HTML(footer),
-	})
-}
-
-func renderAPIPage(pd pageData) string {
-	header := renderHeader(pd.ActiveNav)
-	footer := renderFooter(pd)
-	return renderTemplate(apiTemplate, map[string]any{"P": pd, "Header": template.HTML(header), "Footer": template.HTML(footer)})
-}
-
-func renderAboutPage(pd pageData) string {
-	header := renderHeader(pd.ActiveNav)
-	footer := renderFooter(pd)
-	return renderTemplate(aboutTemplate, map[string]any{"P": pd, "Header": template.HTML(header), "Footer": template.HTML(footer)})
-}
-
-func renderContactPage(pd pageData) string {
-	header := renderHeader(pd.ActiveNav)
-	footer := renderFooter(pd)
-	return renderTemplate(contactTemplate, map[string]any{"P": pd, "Header": template.HTML(header), "Footer": template.HTML(footer)})
-}
-
-func urlPathUnescape(v string) (string, error) {
-	replacer := strings.NewReplacer("%2F", "/", "%2f", "/")
-	v = replacer.Replace(v)
-	return strings.ReplaceAll(v, "%3A", ":"), nil
-}
-
-func parseCachePolicy(policy string) int {
-	switch strings.ToLower(strings.TrimSpace(policy)) {
-	case "file", "nocache", "none":
-		return service.NoCache
-	case "content", "buffer", "buffercache":
-		return service.BufferCache
-	default:
-		return service.VIndexCache
-	}
-}
-
-func parseInt(s string, fallback int) int {
-	n, err := strconv.Atoi(strings.TrimSpace(s))
-	if err != nil || n <= 0 {
-		return fallback
-	}
-	return n
-}
-
-func parseBool(s string, fallback bool) bool {
-	s = strings.TrimSpace(strings.ToLower(s))
-	if s == "" {
-		return fallback
-	}
-	return s == "1" || s == "true" || s == "yes" || s == "y" || s == "on"
-}
-
-func envOr(key, fallback string) string {
-	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
-		return v
-	}
-	return fallback
-}
-
-const commonHead = `<link rel="stylesheet" href="https://icons.bluecdn.com/fontawesome-pro/css/all.min.css">
-<link rel="stylesheet" href="https://flagcdn.io/css/flag-icons.min.css" />
-<link rel="preconnect" href="https://fonts.bluecdn.com">
-<link href="https://fonts.bluecdn.com/css2?family=Cairo+Play:wght@400;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="https://static.bluecdn.com/npm/tailwindcss@4.2.1/index.min.css">
-<link rel="stylesheet" href="/assets/main.css">`
-
-const headerTemplate = `<nav class="top-nav">
-  <div class="top-nav-inner">
-    <div>
-      <a href="/" class="brand-link" aria-label="ip.bluecdn.com">
-        <svg t="1772241833459" class="brand-logo" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="13684" width="24" height="24" fill="currentColor" aria-hidden="true">
-          <path d="M582.3 918H182.1c-41.2-0.3-74.5-35.8-74.5-79.5V186.9c0-43.9 33.6-79.4 74.9-79.4h662.1c41.2 0.3 74.5 35.7 74.5 79.4v434c0 7.7-5.9 14-13.2 14-7.3 0-13.2-6.3-13.2-14v-434c-0.1-28.3-21.8-51.3-48.5-51.3H182.1c-26.6 0.3-48 23.2-48.1 51.3v651.7c0 28.4 21.7 51.4 48.5 51.4h399.7c7.3 0 13.2 6.3 13.2 14 0.1 7.8-5.8 14-13.1 14z"></path>
-          <path d="M582.3 927.4H182.1c-46.1-0.3-83.3-40-83.3-88.8V186.9c0.1-49 37.6-88.7 83.8-88.8h662.1c46 0.3 83.2 39.9 83.3 88.8v434c0 12.9-9.9 23.4-22 23.4s-22-10.5-22-23.4v-434c0-23.2-17.8-42-39.7-42H182.1c-21.7 0.3-39.2 19-39.2 42v651.7c0 23.2 17.8 42 39.7 42.1h399.7c12.2 0 22 10.5 22 23.4 0 12.8-9.8 23.3-22 23.3zM182.1 117c-36.2 0.3-65.5 31.4-65.7 69.9v651.7c0 38.7 29.6 70.1 66.1 70.1h399.7c2.4 0 4.4-2.1 4.4-4.7s-2-4.7-4.4-4.7H182.1c-31.5-0.3-56.8-27.4-56.9-60.8V186.9c0-33.5 25.7-60.7 57.3-60.7h662.1c31.4 0.3 56.8 27.3 56.9 60.7v434c0 2.6 2 4.7 4.4 4.7 2.4 0 4.4-2.1 4.4-4.7v-434c0-38.7-29.6-70-66.1-70l-662.1 0.1z"></path>
-          <path d="M729.1 869.6c-63.3 0-114.6-54.4-114.6-121.6s51.3-121.6 114.6-121.6S843.7 680.9 843.7 748c0 67.2-51.3 121.6-114.6 121.6z m0-214.4c-48.7 0-88.2 41.9-88.2 93.5s39.5 93.5 88.2 93.5 88.2-41.9 88.2-93.5c0.1-51.6-39.3-93.6-88-93.7h-0.2v0.2z"></path>
-          <path d="M876.4 927.7c-3.7 0-7.3-1.7-9.8-4.6l-76.5-88.9c-5.5-5.1-6-14-1.2-19.8 4.8-5.8 13.2-6.4 18.7-1.3 0.8 0.7 1.4 1.5 2 2.4l76.5 88.8c4.9 5.7 4.6 14.6-0.8 19.8-2.4 2.4-5.6 3.6-8.9 3.6zM423.6 340.7v315.6h-82.7V340.7h82.7z m146.8 315.7h-80.7V340.7h117.9C712.3 339.6 764 372 762.7 438c-2.8 61.3-46.9 93.8-132.2 97.3h-60l-0.1 121.1z m0-262.8v88.8h24.8c55.1 4.6 82-10.2 80.7-44.3 0-30.8-26.4-45.5-80.7-44.4l-24.8-0.1z"></path>
-        </svg>
-      </a>
-    </div>
-    <div class="nav-menu" data-nav-track>
-      <span class="nav-indicator" aria-hidden="true"></span>
-      <a class="{{.HomeClass}}" data-nav-item href="/">首页</a>
-      <a class="{{.AboutClass}}" data-nav-item href="/about">关于</a>
-      <a class="{{.APIClass}}" data-nav-item href="/api">接口</a>
-      <a class="{{.ContactClass}}" data-nav-item href="/contact">联系</a>
-    </div>
-  </div>
-</nav>
-<script>(function(){var menus=document.querySelectorAll('[data-nav-track]');if(!menus.length)return;menus.forEach(function(menu){var indicator=menu.querySelector('.nav-indicator');var items=menu.querySelectorAll('[data-nav-item]');if(!indicator||!items.length)return;var active=menu.querySelector('[data-nav-item].is-active')||items[0];function moveTo(el){if(!el)return;indicator.style.width=el.offsetWidth+'px';indicator.style.height=el.offsetHeight+'px';indicator.style.transform='translate('+el.offsetLeft+'px,'+el.offsetTop+'px)';indicator.style.opacity='1';}moveTo(active);items.forEach(function(item){item.addEventListener('mouseenter',function(){moveTo(item);});item.addEventListener('focus',function(){moveTo(item);});});menu.addEventListener('mouseleave',function(){moveTo(active);});menu.addEventListener('focusout',function(event){if(!menu.contains(event.relatedTarget))moveTo(active);});window.addEventListener('resize',function(){moveTo(active);});});})();</script>`
-
-const footerTemplate = `<section class="footer">
-  <div class="xdb-meta"><span class="tag">版本日期</span><span class="xdb-note">ip2region 付费版数据库</span> · 上次更新日期：<b>{{.FooterMeta.UpdatedAt}}</b> · 下次更新日期：<b>{{.FooterMeta.NextUpdateAt}}</b></div>
-</section>
-<footer class="site-footer">
-  <div class="site-footer-inner">
-    <span class="site-copyright">© {{.Year}} <a class="copyright-brand" href="https://www.bluecdn.com/" target="_blank" rel="noreferrer">Bluecdn.com</a> All rights reserved.</span>
-    <div class="site-socials" aria-label="Social links">
-      <a href="https://x.com/bluecdn" target="_blank" rel="noreferrer" aria-label="X"><i class="fa-brands fa-x-twitter" aria-hidden="true"></i></a>
-      <a href="https://github.com/bluecdn" target="_blank" rel="noreferrer" aria-label="GitHub"><i class="fa-brands fa-github" aria-hidden="true"></i></a>
-      <a href="https://www.linkedin.com/company/bluecdn/" target="_blank" rel="noreferrer" aria-label="LinkedIn"><i class="fa-brands fa-linkedin-in" aria-hidden="true"></i></a>
-      <a href="https://t.me/bluecdn" target="_blank" rel="noreferrer" aria-label="Telegram"><i class="fa-brands fa-telegram" aria-hidden="true"></i></a>
-    </div>
-  </div>
-</footer>`
-
-const homeTemplate = `<!doctype html>
-<html lang="{{.P.Lang}}">
+const siteTemplate = `<!doctype html>
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>{{.P.Title}}</title>
-  <meta name="description" content="{{.P.Description}}" />
-  ` + commonHead + `
+  <title>{{if .LookupQuery}}{{.LookupQuery}} - IP 信息查询 - IPX.EE{{else}}IPX.EE - IPv4 / IPv6 / GeoIP Lookup API{{end}}</title>
+  <meta name="description" content="{{if .LookupQuery}}{{.LookupQuery}} 的 GeoIP 查询结果。支持 IP 与域名查询。{{else}}IPX.EE 提供 IPv4、IPv6 与 GeoIP 查询。支持当前访问者 IP、指定 IP、指定域名查询，输出简洁直接的 JSON 结果。{{end}}">
+  <meta name="robots" content="index,follow,max-image-preview:large">
+  <meta name="application-name" content="IPX.EE">
+  <meta name="theme-color" content="#0052d9">
+  <link rel="canonical" href="https://{{.SiteHost}}{{if .LookupQuery}}/{{.LookupQuery}}{{else}}/{{end}}">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="IPX.EE">
+  <meta property="og:title" content="{{if .LookupQuery}}{{.LookupQuery}} - IP 信息查询 - IPX.EE{{else}}IPX.EE - IPv4 / IPv6 / GeoIP Lookup API{{end}}">
+  <meta property="og:description" content="{{if .LookupQuery}}{{.LookupQuery}} 的 GeoIP 查询结果。{{else}}快速查看 IPv4、IPv6 与 GeoIP 信息。支持当前访问者、指定 IP 和指定域名查询。{{end}}">
+  <meta property="og:url" content="https://{{.SiteHost}}{{if .LookupQuery}}/{{.LookupQuery}}{{else}}/{{end}}">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="{{if .LookupQuery}}{{.LookupQuery}} - IP 信息查询 - IPX.EE{{else}}IPX.EE - IPv4 / IPv6 / GeoIP Lookup API{{end}}">
+  <meta name="twitter:description" content="{{if .LookupQuery}}{{.LookupQuery}} 的 GeoIP 查询结果。{{else}}快速查看 IPv4、IPv6 与 GeoIP 信息。支持当前访问者、指定 IP 和指定域名查询。{{end}}">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%230052d9'/%3E%3C/svg%3E">
+  <script defer src="https://tongji.giantaccel.com/script.js" data-website-id="e7e85005-1a72-4ce4-b9e1-691e91e82ccc"></script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    "name": "IPX.EE",
+    "url": "https://{{.SiteHost}}/",
+    "description": "IPv4 / IPv6 / GeoIP Lookup API",
+    "potentialAction": {
+      "@type": "SearchAction",
+      "target": "https://{{.APIHost}}/{search_term_string}",
+      "query-input": "required name=search_term_string"
+    }
+  }
+  </script>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f2f6fc;
+      --bg-soft: #f7faff;
+      --panel: #ffffff;
+      --line: #d6dfec;
+      --line-strong: #b9c9e0;
+      --text: #16243a;
+      --muted: #5d7088;
+      --accent: #0052d9;
+      --accent-soft: #eaf2ff;
+      --ok: #16803c;
+      --ok-bg: #edf8f1;
+      --error: #c84b31;
+      --error-bg: #fff1ed;
+      --shadow: 0 14px 34px rgba(0, 56, 140, 0.08);
+    }
+    * { box-sizing: border-box; }
+    html { background: var(--bg); }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        linear-gradient(180deg, #f9fbff 0%, #f3f7fd 48%, #eef3f9 100%);
+      color: var(--text);
+      font-family: "Charter", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+    }
+    a { color: inherit; text-decoration: none; }
+    code, pre, .value, .badge, .state, .section-title, .note-label {
+      font-family: "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+    }
+    .wrap {
+      max-width: 840px;
+      margin: 0 auto;
+      padding: 24px 16px 56px;
+    }
+    .hero,
+    .table,
+    .foot {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+    }
+    .hero {
+      border-radius: 0;
+      border-top: 4px solid var(--accent);
+      padding: 26px 24px;
+    }
+    .hero-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .hero-copy {
+      min-width: 0;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      border-radius: 0;
+      border: 1px solid #bed3ff;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .badge::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 0;
+      background: var(--accent);
+    }
+    h1 {
+      margin: 18px 0 0;
+      font-size: clamp(38px, 8vw, 56px);
+      line-height: 0.98;
+      letter-spacing: -0.06em;
+    }
+    .search-form {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      width: min(100%, 440px);
+      margin-top: 18px;
+    }
+    .search-input,
+    .search-button {
+      height: 48px;
+      border-radius: 0;
+      border: 1px solid var(--line-strong);
+      font: inherit;
+    }
+    .search-input {
+      width: 100%;
+      padding: 0 14px;
+      background: #fff;
+      color: var(--text);
+      outline: none;
+    }
+    .search-input:focus {
+      border-color: var(--accent);
+      box-shadow: inset 0 0 0 1px var(--accent);
+    }
+    .search-button {
+      padding: 0 18px;
+      background: var(--accent);
+      color: #fff;
+      cursor: pointer;
+    }
+    .hero-note {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.7;
+      word-break: break-word;
+    }
+    .section {
+      margin-top: 18px;
+    }
+    .section-title {
+      margin: 0 0 10px;
+      color: var(--accent);
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .table {
+      border-radius: 0;
+      overflow: hidden;
+      border-top: 2px solid var(--accent);
+    }
+    .result-card,
+    .list-row {
+      padding: 20px 22px;
+      background: #ffffff;
+    }
+    .result-card + .result-card,
+    .list-row + .list-row {
+      border-top: 1px solid var(--line);
+    }
+    .result-card {
+      padding: 0;
+    }
+    .result-head {
+      display: grid;
+      grid-template-columns: 68px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 18px;
+      padding: 22px;
+      border-bottom: 1px solid var(--line);
+    }
+    .row-label {
+      margin: 0;
+      color: var(--accent);
+      font-size: 13px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .state {
+      padding: 6px 10px;
+      border-radius: 0;
+      border: 1px solid var(--line);
+      background: var(--bg-soft);
+      color: #7a8b9f;
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-left: auto;
+      justify-self: end;
+    }
+    .result-card.is-ready .state {
+      color: var(--ok);
+      background: var(--ok-bg);
+      border-color: #b9ddc6;
+    }
+    .result-card.is-error .state {
+      color: var(--error);
+      background: var(--error-bg);
+      border-color: #f0c9bf;
+    }
+    .value {
+      margin: 0;
+      font-size: clamp(22px, 5vw, 34px);
+      line-height: 1.2;
+      letter-spacing: -0.04em;
+      color: var(--text);
+      word-break: break-word;
+    }
+    .value.is-v6 {
+      font-size: clamp(14px, 2.6vw, 24px);
+      line-height: 1.15;
+      letter-spacing: -0.05em;
+      white-space: nowrap;
+      word-break: normal;
+      overflow-x: auto;
+      overflow-y: hidden;
+      scrollbar-width: none;
+    }
+    .value.is-v6::-webkit-scrollbar {
+      display: none;
+    }
+    .meta {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 0;
+      padding: 0 22px 10px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.7;
+    }
+    .geo-line {
+      display: grid;
+      grid-template-columns: 72px minmax(0, 1fr);
+      align-items: center;
+      gap: 14px;
+      width: 100%;
+      min-height: 24px;
+      padding: 12px 0;
+      border-top: 1px solid #edf2f8;
+    }
+    .geo-line:first-child {
+      border-top: 0;
+    }
+    .geo-label {
+      color: var(--text);
+      font-size: 12px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .geo-value {
+      min-width: 0;
+      word-break: break-word;
+    }
+    .geo-country {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text);
+    }
+    .geo-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .geo-badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 0 10px;
+      border: 1px solid #eadb9c;
+      background: #fff9e7;
+      color: #7f6720;
+      font-size: 12px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .geo-badge.is-true {
+      border-color: #bed3ff;
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+    .geo-badge.is-risk {
+      border-color: #f0c9bf;
+      background: #fff3ef;
+      color: #b55a45;
+    }
+    .geo-flag {
+      width: 18px;
+      height: 13px;
+      display: inline-block;
+      object-fit: cover;
+      flex: 0 0 auto;
+      vertical-align: middle;
+    }
+    .list-row strong {
+      display: inline;
+      margin-right: 10px;
+      font-size: 14px;
+      color: var(--text);
+    }
+    .list-row code {
+      display: inline;
+      margin-right: 10px;
+      padding: 0;
+      border-radius: 0;
+      background: transparent;
+      border: 0;
+      color: var(--accent);
+      font-size: 13px;
+      word-break: break-word;
+    }
+    .list-row span {
+      display: inline;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.75;
+    }
+    .foot {
+      margin-top: 18px;
+      border-radius: 0;
+      border-left: 4px solid var(--accent);
+      padding: 16px 18px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.8;
+    }
+    .foot code {
+      color: var(--text);
+      font-size: 13px;
+    }
+    @media (max-width: 640px) {
+      .wrap {
+        padding: 16px 12px 36px;
+      }
+      .hero,
+      .list-row {
+        padding: 18px;
+      }
+      .hero-top {
+        align-items: flex-start;
+      }
+      .search-form {
+        grid-template-columns: 1fr;
+        width: 100%;
+      }
+      .result-head {
+        grid-template-columns: 1fr;
+        gap: 12px;
+        align-items: flex-start;
+        padding: 18px;
+      }
+      .meta {
+        padding: 0 18px 8px;
+      }
+      .state {
+        margin-left: 0;
+        justify-self: start;
+      }
+      .geo-line {
+        grid-template-columns: 1fr;
+        gap: 4px;
+      }
+    }
+  </style>
 </head>
-<body class="min-h-screen bg-background text-foreground overflow-x-hidden">
-  {{.Header}}
-  <main class="wrap">
-    <section class="hero-landing">
-      <h1 class="hero-landing-title">IP Address Lookup</h1>
-      <p class="hero-landing-sub">快速识别访问者 IP，支持 <span class="font-cairo-play">IPv4</span> / <span class="font-cairo-play">IPv6</span> 查询与 GeoIP 结果展示。</p>
-      <div class="hero-landing-actions">
-        <a class="hero-action-btn hero-action-btn-primary" href="/api">API</a>
-        <button id="hero-focus-query" class="hero-action-btn hero-action-btn-ghost" type="button">查询</button>
-      </div>
-    </section>
-
-    <section id="query-panel" class="hero">
-      <div class="hero-title-row">
-        <h1 class="title">{{.P.QueryHeading}}</h1>
-        <div id="status" class="status status-query">{{.P.StatusText}}</div>
-      </div>
-      <p class="sub">首页会自动识别当前访问者 IP；输入 <span class="font-cairo-play">IPv4/IPv6</span> 后，将通过 <code class="font-cairo-play">/geoip/{ip}</code> 返回对应地理信息。</p>
-      <form id="ip-query-form" class="ip-query" autocomplete="off">
-        <input id="ip-query-input" class="ip-query-input" type="text" inputmode="text" placeholder="输入 IPv4 / IPv6，例如 8.8.8.8 或 2001:4860:4860::8888" aria-label="IP address">
-        <button class="ip-query-btn" type="submit">查询 IP</button>
-      </form>
-    </section>
-
-    <section class="panel">
-      <h2 class="panel-title">实时识别结果</h2>
-      <div id="result-groups" class="result-groups">
-        <section id="group-v4" class="result-group" hidden>
-          <h3 class="result-title">IPv4（来自 ipv4.bluecdn.com）</h3>
-          <section id="grid-v4" class="grid"></section>
-        </section>
-        <section id="group-v6" class="result-group" hidden>
-          <h3 class="result-title">IPv6（来自 ipv6.bluecdn.com）</h3>
-          <section id="grid-v6" class="grid"></section>
-        </section>
-        <section id="group-query" class="result-group" hidden>
-          <h3 class="result-title">查询结果</h3>
-          <section id="grid-query" class="grid"></section>
-        </section>
-      </div>
-    </section>
-
-    {{.Footer}}
-  </main>
-  <script id="field-config" type="application/json">{{.P.FieldsJSON}}</script>
-  <script id="initial-geoip" type="application/json">{{.P.InitialGeoJSON}}</script>
-  <script id="initial-query-ip" type="application/json">{{.P.InitialQueryIP}}</script>
-  <script src="/assets/main.js"></script>
-</body>
-</html>`
-
-const apiTemplate = `<!doctype html>
-<html lang="{{.P.Lang}}">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>{{.P.Title}}</title>
-  <meta name="description" content="{{.P.Description}}" />
-  ` + commonHead + `
-</head>
-<body class="api-page min-h-screen bg-background text-foreground overflow-x-hidden">
-  {{.Header}}
+<body>
   <main class="wrap">
     <section class="hero">
-      <h1 class="title">API Documentation</h1>
-      <p class="sub">提供 IP、JSON IP、GeoIP 接口。支持双栈查询、指定 IP 定位、脚本调用与浏览器跨域调用。</p>
-      <div class="status">Base URL: <code>https://ip.bluecdn.com</code></div>
-    </section>
-
-    <section class="panel">
-      <h2 class="panel-title">接口总览</h2>
-      <div class="grid">
-        <div class="result-row"><span class="k">GET /ip</span><span class="v">纯文本返回访问者公网 IP</span></div>
-        <div class="result-row"><span class="k">GET /jsonip</span><span class="v">JSON 返回访问者 IP</span></div>
-        <div class="result-row"><span class="k">GET /geoip</span><span class="v">JSON 返回访问者 IP 地理信息</span></div>
-        <div class="result-row"><span class="k">GET /geoip/{ip}</span><span class="v">JSON 返回指定 IP 地理信息（支持 IPv4 / IPv6）</span></div>
+      <div class="hero-top">
+        <div class="hero-copy">
+          <a class="badge" href="/">ipx.ee</a>
+          <h1>IP 信息查询</h1>
+        </div>
       </div>
+      <form class="search-form" id="search-form" action="/" method="get">
+        <input class="search-input" id="search-input" name="q" type="search" placeholder="输入 IP 或域名，例如 8.8.8.8 或 google.com" value="{{.LookupQuery}}" autocomplete="off" spellcheck="false">
+        <button class="search-button" type="submit">查询</button>
+      </form>
+      {{if .LookupQuery}}<div class="hero-note">结果页地址：<code>https://{{.SiteHost}}/{{.LookupQuery}}</code></div>{{end}}
     </section>
 
-    <section class="panel">
-      <h2 class="panel-title">IP（纯文本）</h2>
-      <p class="doc-lead">返回访问者公网 IP（IPv4 或 IPv6）纯文本。</p>
-      <div class="api-lang-grid">
-        <article class="api-lang-card">
-          <h3 class="api-lang-title">中文说明</h3>
-          <div class="api-table-wrap"><table class="api-table"><thead><tr><th>模式</th><th>可点击地址</th><th>命令</th></tr></thead><tbody>
-            <tr><td>双栈（IPv4 + IPv6）</td><td><a class="api-link" href="https://ip.bluecdn.com/ip" target="_blank" rel="noopener noreferrer">https://ip.bluecdn.com/ip</a></td><td><span class="cmd-chip"><code class="inline-code">curl ip.bluecdn.com</code><button class="copy-icon-btn" type="button" data-copy-text="curl ip.bluecdn.com" aria-label="复制命令"><i class="fa-regular fa-copy" aria-hidden="true"></i></button></span></td></tr>
-            <tr><td>仅 IPv4</td><td><a class="api-link" href="https://ipv4.bluecdn.com" target="_blank" rel="noopener noreferrer">https://ipv4.bluecdn.com</a></td><td><span class="cmd-chip"><code class="inline-code">curl -4 ip.bluecdn.com</code><button class="copy-icon-btn" type="button" data-copy-text="curl -4 ip.bluecdn.com" aria-label="复制命令"><i class="fa-regular fa-copy" aria-hidden="true"></i></button></span><span class="cmd-sep"> / </span><span class="cmd-chip"><code class="inline-code">curl ipv4.bluecdn.com</code><button class="copy-icon-btn" type="button" data-copy-text="curl ipv4.bluecdn.com" aria-label="复制命令"><i class="fa-regular fa-copy" aria-hidden="true"></i></button></span></td></tr>
-            <tr><td>仅 IPv6</td><td><a class="api-link" href="https://ipv6.bluecdn.com" target="_blank" rel="noopener noreferrer">https://ipv6.bluecdn.com</a></td><td><span class="cmd-chip"><code class="inline-code">curl -6 ip.bluecdn.com</code><button class="copy-icon-btn" type="button" data-copy-text="curl -6 ip.bluecdn.com" aria-label="复制命令"><i class="fa-regular fa-copy" aria-hidden="true"></i></button></span><span class="cmd-sep"> / </span><span class="cmd-chip"><code class="inline-code">curl ipv6.bluecdn.com</code><button class="copy-icon-btn" type="button" data-copy-text="curl ipv6.bluecdn.com" aria-label="复制命令"><i class="fa-regular fa-copy" aria-hidden="true"></i></button></span></td></tr>
-          </tbody></table></div>
+    <section class="section">
+      <div class="section-title">{{if .LookupQuery}}查询结果{{else}}实时结果{{end}}</div>
+      <div class="table">
+        {{if .LookupQuery}}
+        <article class="result-card is-loading" id="lookup-card">
+          <div class="result-head">
+            <div class="row-label">查询</div>
+            <div class="value" id="lookup-ip">{{.LookupQuery}}</div>
+            <span class="state" id="lookup-state">loading</span>
+          </div>
+          <div class="meta" id="lookup-meta">正在查询 https://{{.APIHost}}/{{.LookupQuery}}</div>
         </article>
-        <article class="api-lang-card api-lang-card-en">
-          <h3 class="api-lang-title">English</h3>
-          <div class="api-table-wrap"><table class="api-table"><thead><tr><th>Mode</th><th>Clickable Endpoint</th><th>Command</th></tr></thead><tbody>
-            <tr><td>Dual Stack (IPv4 + IPv6)</td><td><a class="api-link" href="https://ip.bluecdn.com/ip" target="_blank" rel="noopener noreferrer">https://ip.bluecdn.com/ip</a></td><td><span class="cmd-chip"><code class="inline-code">curl ip.bluecdn.com</code><button class="copy-icon-btn" type="button" data-copy-text="curl ip.bluecdn.com" aria-label="Copy command"><i class="fa-regular fa-copy" aria-hidden="true"></i></button></span></td></tr>
-            <tr><td>IPv4 Only</td><td><a class="api-link" href="https://ipv4.bluecdn.com" target="_blank" rel="noopener noreferrer">https://ipv4.bluecdn.com</a></td><td><span class="cmd-chip"><code class="inline-code">curl -4 ip.bluecdn.com</code><button class="copy-icon-btn" type="button" data-copy-text="curl -4 ip.bluecdn.com" aria-label="Copy command"><i class="fa-regular fa-copy" aria-hidden="true"></i></button></span><span class="cmd-sep"> / </span><span class="cmd-chip"><code class="inline-code">curl ipv4.bluecdn.com</code><button class="copy-icon-btn" type="button" data-copy-text="curl ipv4.bluecdn.com" aria-label="Copy command"><i class="fa-regular fa-copy" aria-hidden="true"></i></button></span></td></tr>
-            <tr><td>IPv6 Only</td><td><a class="api-link" href="https://ipv6.bluecdn.com" target="_blank" rel="noopener noreferrer">https://ipv6.bluecdn.com</a></td><td><span class="cmd-chip"><code class="inline-code">curl -6 ip.bluecdn.com</code><button class="copy-icon-btn" type="button" data-copy-text="curl -6 ip.bluecdn.com" aria-label="Copy command"><i class="fa-regular fa-copy" aria-hidden="true"></i></button></span><span class="cmd-sep"> / </span><span class="cmd-chip"><code class="inline-code">curl ipv6.bluecdn.com</code><button class="copy-icon-btn" type="button" data-copy-text="curl ipv6.bluecdn.com" aria-label="Copy command"><i class="fa-regular fa-copy" aria-hidden="true"></i></button></span></td></tr>
-          </tbody></table></div>
+        {{else}}
+        <article class="result-card is-loading" id="v4-card">
+          <div class="result-head">
+            <div class="row-label">IPv4</div>
+            <div class="value" id="v4-ip">加载中...</div>
+            <span class="state" id="v4-state">loading</span>
+          </div>
+          <div class="meta" id="v4-meta">正在请求 https://{{.V4Host}}/</div>
         </article>
+
+        <article class="result-card is-loading" id="v6-card">
+          <div class="result-head">
+            <div class="row-label">IPv6</div>
+            <div class="value is-v6" id="v6-ip">加载中...</div>
+            <span class="state" id="v6-state">loading</span>
+          </div>
+          <div class="meta" id="v6-meta">正在请求 https://{{.V6Host}}/</div>
+        </article>
+        {{end}}
       </div>
     </section>
 
-    <section class="panel"><h2 class="panel-title">JSON IP（JSON）</h2><div class="cmd-grid"><article class="terminal"><div class="terminal-head">JSON</div><pre><code>$ curl ip.bluecdn.com/jsonip
-{"ip":"203.0.113.10"}</code></pre></article></div></section>
-    <section class="panel"><h2 class="panel-title">GeoIP（JSON）</h2><div class="cmd-grid"><article class="terminal"><div class="terminal-head">当前访问者 IP</div><pre><code>$ curl ip.bluecdn.com/geoip</code></pre></article><article class="terminal"><div class="terminal-head">指定 IP（测试 IP）</div><pre><code>$ curl ip.bluecdn.com/geoip/8.8.8.8</code></pre></article></div></section>
-
-    <section class="panel">
-      <h2 class="panel-title">多语言调用示例</h2>
-      <div class="lang-tabs" role="tablist" aria-label="Language tabs">
-        <button class="lang-tab is-active" type="button" role="tab" aria-selected="true" data-lang-target="lang-node">Node.js</button>
-        <button class="lang-tab" type="button" role="tab" aria-selected="false" data-lang-target="lang-php">PHP</button>
-        <button class="lang-tab" type="button" role="tab" aria-selected="false" data-lang-target="lang-python">Python</button>
-        <button class="lang-tab" type="button" role="tab" aria-selected="false" data-lang-target="lang-go">Go</button>
-      </div>
-      <div class="lang-panels">
-        <article id="lang-node" class="terminal lang-panel is-active" role="tabpanel"><div class="terminal-head">Node.js</div><button class="lang-code-copy" type="button" aria-label="Copy code"><i class="fa-regular fa-copy" aria-hidden="true"></i></button><pre><code>const ip = await fetch('https://ip.bluecdn.com/ip').then(r =&gt; r.text());
-const geo = await fetch('https://ip.bluecdn.com/geoip/8.8.8.8').then(r =&gt; r.json());</code></pre></article>
-        <article id="lang-php" class="terminal lang-panel" role="tabpanel" hidden><div class="terminal-head">PHP</div><button class="lang-code-copy" type="button" aria-label="Copy code"><i class="fa-regular fa-copy" aria-hidden="true"></i></button><pre><code>&lt;?php
-$ip = trim(file_get_contents('https://ip.bluecdn.com/ip'));
-$geo = json_decode(file_get_contents('https://ip.bluecdn.com/geoip/8.8.8.8'), true);</code></pre></article>
-        <article id="lang-python" class="terminal lang-panel" role="tabpanel" hidden><div class="terminal-head">Python</div><button class="lang-code-copy" type="button" aria-label="Copy code"><i class="fa-regular fa-copy" aria-hidden="true"></i></button><pre><code>import requests
-ip = requests.get('https://ip.bluecdn.com/ip', timeout=10).text.strip()
-geo = requests.get('https://ip.bluecdn.com/geoip/8.8.8.8', timeout=10).json()</code></pre></article>
-        <article id="lang-go" class="terminal lang-panel" role="tabpanel" hidden><div class="terminal-head">Go</div><button class="lang-code-copy" type="button" aria-label="Copy code"><i class="fa-regular fa-copy" aria-hidden="true"></i></button><pre><code>resp, _ := http.Get("https://ip.bluecdn.com/ip")
-ipBytes, _ := io.ReadAll(resp.Body)
-fmt.Println(strings.TrimSpace(string(ipBytes)))</code></pre></article>
+    <section class="section">
+      <div class="section-title">补充说明</div>
+      <div class="table">
+        <div class="list-row">
+          <strong>主站</strong>
+          <code>curl {{.SiteHost}}</code>
+          <span>直接返回访问 IP。</span>
+        </div>
+        <div class="list-row">
+          <strong>当前访问者 GeoIP</strong>
+          <code>GET https://{{.APIHost}}/ip</code>
+          <span>返回当前访问者的 GeoIP JSON。</span>
+        </div>
+        <div class="list-row">
+          <strong>指定 IP</strong>
+          <code>GET https://{{.APIHost}}/24.48.0.1</code>
+          <span>直接按指定 IP 查询。</span>
+        </div>
+        <div class="list-row">
+          <strong>指定域名</strong>
+          <code>GET https://{{.APIHost}}/example.com</code>
+          <span>域名会先解析，再返回 GeoIP。</span>
+        </div>
+        <div class="list-row">
+          <strong>IPv4 探测</strong>
+          <code>curl -4 {{.SiteHost}}</code>
+          <code>curl {{.V4Host}}</code>
+          <span>两种方式都只看当前访问者的 IPv4。</span>
+        </div>
+        <div class="list-row">
+          <strong>IPv6 探测</strong>
+          <code>curl -6 {{.SiteHost}}</code>
+          <code>curl {{.V6Host}}</code>
+          <span>两种方式都只看当前访问者的 IPv6。</span>
+        </div>
       </div>
     </section>
 
-    {{.Footer}}
+    <div class="foot">如果你只想把它当工具 API 用，直接请求 <code>https://{{.APIHost}}/ip</code> 和 <code>https://{{.APIHost}}/{ip-or-domain}</code> 就够了。</div>
   </main>
-  <script>(function(){async function copyText(t){if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(t);return;}const ta=document.createElement('textarea');ta.value=t;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.focus();ta.select();document.execCommand('copy');ta.remove();}document.querySelectorAll('.copy-icon-btn').forEach((btn)=>{btn.addEventListener('click',async()=>{const icon=btn.querySelector('i');const text=btn.getAttribute('data-copy-text')||'';if(!text||!icon)return;try{await copyText(text);icon.classList.remove('fa-copy','fa-regular');icon.classList.add('fa-check','fa-solid');btn.classList.add('copied');setTimeout(()=>{icon.classList.remove('fa-check','fa-solid');icon.classList.add('fa-copy','fa-regular');btn.classList.remove('copied');},1200);}catch(e){}});});document.querySelectorAll('.lang-code-copy').forEach((btn)=>{btn.addEventListener('click',async()=>{const icon=btn.querySelector('i');const panel=btn.closest('.lang-panel');const codeEl=panel?panel.querySelector('pre code'):null;const text=codeEl?codeEl.textContent||'':'';if(!text||!icon)return;try{await copyText(text);icon.classList.remove('fa-copy','fa-regular');icon.classList.add('fa-check','fa-solid');btn.classList.add('copied');setTimeout(()=>{icon.classList.remove('fa-check','fa-solid');icon.classList.add('fa-copy','fa-regular');btn.classList.remove('copied');},1200);}catch(e){}});});const tabs=document.querySelectorAll('.lang-tab');const panels=document.querySelectorAll('.lang-panel');tabs.forEach((tab)=>{tab.addEventListener('click',()=>{const target=tab.getAttribute('data-lang-target');if(!target)return;tabs.forEach((t)=>{t.classList.remove('is-active');t.setAttribute('aria-selected','false');});panels.forEach((p)=>{p.classList.remove('is-active');p.hidden=true;});const active=document.getElementById(target);if(!active)return;tab.classList.add('is-active');tab.setAttribute('aria-selected','true');active.hidden=false;active.classList.add('is-active');});});})();</script>
+
+  <script>
+    (function () {
+      const apiHost = "https://{{.APIHost}}";
+      const lookupQuery = "{{.LookupQuery}}";
+      const v6Host = "{{.V6Host}}";
+      const searchForm = document.getElementById("search-form");
+      const searchInput = document.getElementById("search-input");
+      const lookupCard = document.getElementById("lookup-card");
+      const lookupState = document.getElementById("lookup-state");
+      const lookupIp = document.getElementById("lookup-ip");
+      const lookupMeta = document.getElementById("lookup-meta");
+      const v4Card = document.getElementById("v4-card");
+      const v6Card = document.getElementById("v6-card");
+      const v4State = document.getElementById("v4-state");
+      const v6State = document.getElementById("v6-state");
+      const v4Ip = document.getElementById("v4-ip");
+      const v4Meta = document.getElementById("v4-meta");
+      const v6Ip = document.getElementById("v6-ip");
+      const v6Meta = document.getElementById("v6-meta");
+
+      function setState(card, stateNode, state) {
+        if (!card || !stateNode) return;
+        card.classList.remove("is-loading", "is-ready", "is-error");
+        card.classList.add("is-" + state);
+        if (state === "ready") {
+          stateNode.textContent = "ok";
+          return;
+        }
+        stateNode.textContent = state;
+      }
+
+      function clearNode(node) {
+        while (node.firstChild) {
+          node.removeChild(node.firstChild);
+        }
+      }
+
+      function appendPlainMeta(node, text) {
+        clearNode(node);
+        node.textContent = text;
+      }
+
+      function renderMeta(node, data, opts) {
+        if (!node) return;
+        if (!data || data.error) {
+          appendPlainMeta(node, data && data.error ? data.error : "查询失败");
+          return;
+        }
+
+        const options = opts || {};
+        const lookup = String(data.lookup || "").trim();
+        const network = data.network || {};
+        const flags = data.flags || {};
+        const location = data.location || {};
+        const assets = data.assets || {};
+
+        function firstValue() {
+          for (let i = 0; i < arguments.length; i += 1) {
+            const value = arguments[i];
+            if (value !== undefined && value !== null && value !== "") {
+              return value;
+            }
+          }
+          return "";
+        }
+
+        const country = String(firstValue(location.country, data.country)).trim();
+        const countryCode = String(firstValue(location.country_code, data.country_code)).trim().toLowerCase();
+        const flagURL = String(firstValue(assets.flag, data.flag)).trim();
+        const provinceCity = [firstValue(location.province, data.province), firstValue(location.city, data.city)].filter(Boolean).join(" / ");
+        const latitude = String(firstValue(location.latitude, data.latitude)).trim();
+        const longitude = String(firstValue(location.longitude, data.longitude)).trim();
+        const coordinates = latitude && longitude ? latitude + ", " + longitude : "";
+        const asnValue = String(firstValue(network.asn, data.asn)).trim();
+        const rawASName = String(firstValue(network.as_name, data.as_name)).trim();
+        const rawISP = String(firstValue(network.isp, data.isp)).trim();
+        const rawOrg = String(firstValue(network.org, data.org)).trim();
+
+        function normalizeName(value) {
+          return String(value || "").trim().replace(/\s+/g, " ");
+        }
+        const isp = normalizeName(rawISP);
+        const org = normalizeName(rawOrg);
+        const displayName = isp || org || normalizeName(rawASName);
+
+        clearNode(node);
+
+        function appendLine(label, value, formatter) {
+          if (!value) return;
+          const row = document.createElement("div");
+          row.className = "geo-line";
+
+          const labelNode = document.createElement("strong");
+          labelNode.className = "geo-label";
+          labelNode.textContent = label;
+          row.appendChild(labelNode);
+
+          const valueNode = document.createElement("span");
+          valueNode.className = "geo-value";
+
+          if (typeof formatter === "function") {
+            formatter(valueNode, value);
+          } else {
+            valueNode.textContent = value;
+          }
+
+          row.appendChild(valueNode);
+          node.appendChild(row);
+        }
+
+        if (options.showLookup && lookup) {
+          appendLine("查询", lookup);
+        }
+        appendLine("ASN", asnValue);
+        appendLine("名称", displayName);
+        appendLine("ISP", isp && isp !== displayName ? isp : "");
+        appendLine("组织", org && org !== displayName && org !== isp ? org : "");
+        appendLine("国家", country, function (valueNode, value) {
+          const countryWrap = document.createElement("span");
+          countryWrap.className = "geo-country";
+          if (flagURL || countryCode) {
+            const flag = document.createElement("img");
+            flag.className = "geo-flag";
+            flag.src = flagURL || ("https://flagcdn.io/" + countryCode + ".svg");
+            flag.alt = value;
+            flag.loading = "lazy";
+            countryWrap.appendChild(flag);
+          }
+
+          countryWrap.appendChild(document.createTextNode(value));
+          valueNode.appendChild(countryWrap);
+        });
+        appendLine("省市", provinceCity);
+        appendLine("经纬度", coordinates);
+        appendLine("属性", "badges", function (valueNode) {
+          const badges = document.createElement("span");
+          badges.className = "geo-badges";
+
+          function appendBadge(label, value, danger) {
+            const badge = document.createElement("span");
+            badge.className = "geo-badge";
+            if (value === true) {
+              badge.classList.add(danger ? "is-risk" : "is-true");
+            }
+            badge.textContent = label + ": " + (value === true ? "YES" : "NO");
+            badges.appendChild(badge);
+          }
+
+          appendBadge("HOSTING", flags.is_hosting === true || data.is_hosting === true, false);
+          appendBadge("MOBILE", flags.is_mobile === true || data.is_mobile === true, false);
+          appendBadge("PROXY", flags.is_proxy === true || data.is_proxy === true, true);
+          valueNode.appendChild(badges);
+        });
+
+        if (!node.firstChild) {
+          node.textContent = "无更多地理信息";
+        }
+      }
+
+      async function fetchJSON(url) {
+        const res = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
+        return res.json();
+      }
+
+      async function fetchText(url) {
+        const res = await fetch(url, { cache: "no-store" });
+        return (await res.text()).trim();
+      }
+
+      function normalizeSearchInput(value) {
+        value = String(value || "").trim();
+        value = value.replace(/^[a-z]+:\/\//i, "");
+        value = value.replace(/^\/+/, "");
+        value = value.split(/[/?#]/)[0];
+        value = value.replace(/\/+$/, "");
+        if (value.startsWith("[") && value.endsWith("]")) {
+          value = value.slice(1, -1);
+        }
+        return value.trim();
+      }
+
+      async function loadLookup(query, card, stateNode, ipNode, metaNode) {
+        try {
+          const geo = await fetchJSON(apiHost + "/" + encodeURIComponent(query));
+          ipNode.textContent = geo && geo.ip ? geo.ip : query;
+          renderMeta(metaNode, geo, { showLookup: true });
+          setState(card, stateNode, geo && !geo.error ? "ready" : "error");
+        } catch (err) {
+          ipNode.textContent = query || "不可用";
+          appendPlainMeta(metaNode, "查询失败");
+          setState(card, stateNode, "error");
+        }
+      }
+
+      async function loadStack(host, card, stateNode, ipNode, metaNode, unavailableText) {
+        try {
+          const geo = await fetchJSON("https://" + host + "/?format=json");
+          const ip = geo && geo.ip ? String(geo.ip).trim() : "";
+          ipNode.textContent = ip || "不可用";
+          if (!ip) {
+            appendPlainMeta(metaNode, unavailableText || (geo && geo.error ? geo.error : "未返回 IP"));
+            setState(card, stateNode, "error");
+            return;
+          }
+          renderMeta(metaNode, geo);
+          setState(card, stateNode, geo && !geo.error ? "ready" : "error");
+        } catch (err) {
+          ipNode.textContent = "不可用";
+          appendPlainMeta(metaNode, unavailableText || "访问失败");
+          setState(card, stateNode, "error");
+        }
+      }
+
+      if (searchForm && searchInput) {
+        searchForm.addEventListener("submit", function (event) {
+          const query = normalizeSearchInput(searchInput.value);
+          if (!query) {
+            event.preventDefault();
+            searchInput.focus();
+            return;
+          }
+          event.preventDefault();
+          window.location.href = "/" + encodeURIComponent(query);
+        });
+      }
+
+      if (lookupQuery && lookupCard && lookupState && lookupIp && lookupMeta) {
+        loadLookup(lookupQuery, lookupCard, lookupState, lookupIp, lookupMeta);
+        return;
+      }
+
+      loadStack("{{.V4Host}}", v4Card, v4State, v4Ip, v4Meta);
+      loadStack(v6Host, v6Card, v6State, v6Ip, v6Meta, "不支持 IPv6");
+    })();
+  </script>
 </body>
 </html>`
-
-const aboutTemplate = `<!doctype html>
-<html lang="{{.P.Lang}}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{.P.Title}}</title><meta name="description" content="{{.P.Description}}" />` + commonHead + `</head>
-<body class="min-h-screen bg-background text-foreground overflow-x-hidden">{{.Header}}<main class="wrap"><section class="hero"><h1 class="title">关于我们</h1><p class="sub">ip.bluecdn.com 提供面向开发者与企业的公网 IP 与地理信息查询服务。</p></section><section class="panel"><h2 class="panel-title">产品定位</h2><div class="grid"><div class="result-row"><span class="k">服务目标</span><span class="v">稳定、轻量、可集成。</span></div><div class="result-row"><span class="k">支持协议</span><span class="v">IPv4 / IPv6 双栈，HTTP JSON API。</span></div><div class="result-row"><span class="k">数据来源</span><span class="v">ip2region 付费版数据库。</span></div></div></section>{{.Footer}}</main></body></html>`
-
-const contactTemplate = `<!doctype html>
-<html lang="{{.P.Lang}}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{.P.Title}}</title><meta name="description" content="{{.P.Description}}" />` + commonHead + `</head>
-<body class="min-h-screen bg-background text-foreground overflow-x-hidden">{{.Header}}<main class="wrap"><section class="hero"><h1 class="title">联系</h1><p class="sub">如需技术支持、API 接入协助、企业采购或定制服务，请通过以下方式联系我们。</p></section><section class="panel"><h2 class="panel-title">联系方式</h2><div class="grid"><div class="result-row"><span class="k">官网</span><span class="v"><a href="https://www.bluecdn.com/" target="_blank" rel="noreferrer">https://www.bluecdn.com/</a></span></div><div class="result-row"><span class="k">商务咨询</span><span class="v"><a href="https://www.bluecdn.com/contact" target="_blank" rel="noreferrer">https://www.bluecdn.com/contact</a></span></div><div class="result-row"><span class="k">技术文档</span><span class="v"><a href="/api">/api</a></span></div></div></section>{{.Footer}}</main></body></html>`

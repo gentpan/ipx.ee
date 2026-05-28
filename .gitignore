@@ -9,3 +9,4 @@ release/
 go-backend/backend
 node_modules/
 dist/
+data/geoip-cache/

@@ -108,6 +108,32 @@
     return encodeURIComponent(String(ip || '').trim()).replace(/%3A/gi, ':');
   }
 
+  function isDirectAddressHost(host) {
+    const text = String(host || '').trim();
+    if (!text) return true;
+    if (text === 'localhost') return true;
+    if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(text)) return true;
+    return text.includes(':');
+  }
+
+  function getProbeHost(prefix) {
+    const currentHost = String(window.location.hostname || '').trim().toLowerCase();
+    if (!currentHost || isDirectAddressHost(currentHost)) {
+      return prefix + '.bluecdn.com';
+    }
+
+    const labels = currentHost.split('.');
+    if (labels[0] === 'ipv4' || labels[0] === 'ipv6' || labels[0] === 'ip' || labels[0] === 'www') {
+      labels.shift();
+    }
+
+    if (labels.length < 2) {
+      return prefix + '.bluecdn.com';
+    }
+
+    return prefix + '.' + labels.join('.');
+  }
+
   async function copyText(text) {
     if (navigator.clipboard && window.isSecureContext) {
       await navigator.clipboard.writeText(text);
@@ -310,8 +336,8 @@
     groupQuery.hidden = true;
 
     const jobs = [
-      { version: 'v4', host: 'ipv4.bluecdn.com', grid: gridV4, group: groupV4 },
-      { version: 'v6', host: 'ipv6.bluecdn.com', grid: gridV6, group: groupV6 }
+      { version: 'v4', host: getProbeHost('ipv4'), grid: gridV4, group: groupV4 },
+      { version: 'v6', host: getProbeHost('ipv6'), grid: gridV6, group: groupV6 }
     ];
 
     const results = await Promise.allSettled(jobs.map(async (job) => {

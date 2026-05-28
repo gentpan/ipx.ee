@@ -3,24 +3,22 @@
 /**
  * ip.bluecdn.com — 主 IP 查询 API
  *
- * xdb 字段格式 (17 个，管道分隔):
- *   [0]  continent    大洲
- *   [1]  country      国家
- *   [2]  province     省份
- *   [3]  city         城市
- *   [4]  district     区县
- *   [5]  isp          运营商
- *   [6]  longitude    经度
- *   [7]  latitude     纬度
- *   [8]  area_code    行政区划代码
- *   [9]  phone_code   电话区号
- *   [10] zip_code     邮政编码
- *   [11] timezone     时区
- *   [12] currency     货币
- *   [13] asn          ASN
- *   [14] accuracy     精度半径
- *   [15] weather_code 气象站代码
- *   [16] country_code 国家代码
+ * GeoIP 字段格式:
+ *   continent    大洲
+ *   country      国家
+ *   province     省份/州
+ *   city         城市
+ *   district     区县
+ *   isp          运营商
+ *   longitude    经度
+ *   latitude     纬度
+ *   area_code    行政区划代码（当前上游不提供，默认空）
+ *   phone_code   电话区号（当前上游不提供，默认空）
+ *   zip_code     邮政编码
+ *   timezone     时区
+ *   currency     货币
+ *   asn          ASN
+ *   country_code 国家代码
  *
  * 路由:
  *   /              → 首页（自动识别客户端 IP 并展示字段）
@@ -32,14 +30,8 @@
 
 declare(strict_types=1);
 
-require_once __DIR__ . '/lib/Searcher.class.php';
 require_once __DIR__ . '/partials/header.php';
 require_once __DIR__ . '/partials/footer.php';
-
-use ip2region\xdb\Searcher;
-use ip2region\xdb\Util;
-use ip2region\xdb\IPv4;
-use ip2region\xdb\IPv6;
 
 // ─── 全局 CORS（默认开启）───────────────────────────────────
 header('Access-Control-Allow-Origin: *');
@@ -50,12 +42,13 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'OPTIONS') {
     exit;
 }
 
-// ─── 数据库路径 ───────────────────────────────────────────
+// ─── GeoIP Provider 配置 ─────────────────────────────────
 
-const DB_V4 = __DIR__ . '/data/high_full.xdb';
-const DB_V6 = __DIR__ . '/data/high_full_v6.xdb';
-const DEFAULT_XDB_META_URL = 'https://ip2region.net/api/public/data/offline/ver_latest?t=646a0d6627.3e0.69944e81.OS002@GJB';
-const XDB_META_CACHE_SCHEMA = 2;
+const GEOIP_CACHE_SCHEMA = 1;
+const GEOIP_RATE_LIMIT_SCHEMA = 1;
+const DEFAULT_IP_API_ENDPOINT = 'http://ip-api.com/json/';
+const DEFAULT_IP_API_PRO_ENDPOINT = 'https://pro.ip-api.com/json/';
+const DEFAULT_IP_API_FIELDS = 'status,message,continent,country,countryCode,regionName,city,district,zip,lat,lon,timezone,currency,isp,as,query';
 
 // ─── 环境变量 ────────────────────────────────────────────
 
@@ -111,242 +104,372 @@ function renderHeadAssetLinks(): string
 HTML;
 }
 
-// ─── XDB 元信息（版本/更新时间） ─────────────────────────
+// ─── GeoIP Provider 元信息 ───────────────────────────────
 
-function detectUpdateScheduleLabel(): string
+function geoipHttpTimeout(): int
 {
-    $day = max(1, min(28, (int)(envValue('XDB_META_UPDATE_DAY', '2') ?? '2')));
-    $hour = max(0, min(23, (int)(envValue('XDB_META_UPDATE_HOUR', '0') ?? '0')));
-    $minute = max(0, min(59, (int)(envValue('XDB_META_UPDATE_MINUTE', '0') ?? '0')));
-    return "每月 {$day} 号 " . sprintf('%02d:%02d', $hour, $minute);
+    return max(2, min(15, (int)(envValue('GEOIP_HTTP_TIMEOUT', '5') ?? '5')));
 }
 
-function getMetaTimezone(): DateTimeZone
+function geoipCacheTtl(): int
 {
-    $tzName = envValue('XDB_META_TIMEZONE', envValue('APP_TIMEZONE', 'Asia/Tashkent') ?? 'Asia/Tashkent') ?? 'Asia/Tashkent';
-    try {
-        return new DateTimeZone($tzName);
-    } catch (\Exception) {
-        return new DateTimeZone('Asia/Tashkent');
+    return max(60, (int)(envValue('GEOIP_CACHE_TTL', '86400') ?? '86400'));
+}
+
+function geoipIpApiLang(): string
+{
+    $lang = trim((string)(envValue('IP_API_LANG', 'zh-CN') ?? 'zh-CN'));
+    return $lang !== '' ? $lang : 'zh-CN';
+}
+
+function geoipIpApiKey(): string
+{
+    return trim((string)(envValue('IP_API_KEY', '') ?? ''));
+}
+
+function geoipIpApiEndpoint(): string
+{
+    $endpoint = trim((string)(envValue('IP_API_ENDPOINT', '') ?? ''));
+    if ($endpoint === '') {
+        $endpoint = geoipIpApiKey() !== '' ? DEFAULT_IP_API_PRO_ENDPOINT : DEFAULT_IP_API_ENDPOINT;
+    }
+    return rtrim($endpoint, '/') . '/';
+}
+
+function geoipCacheDir(): string
+{
+    return envValue('GEOIP_CACHE_DIR', __DIR__ . '/data/geoip-cache') ?? (__DIR__ . '/data/geoip-cache');
+}
+
+function geoipRateLimitFile(): string
+{
+    return envValue('IP_API_RATE_LIMIT_FILE', __DIR__ . '/data/ip_api_rate_limit.json') ?? (__DIR__ . '/data/ip_api_rate_limit.json');
+}
+
+function ensureDir(string $dir): void
+{
+    if ($dir === '' || is_dir($dir)) return;
+    @mkdir($dir, 0775, true);
+}
+
+function readJsonFile(string $path): ?array
+{
+    if (!is_file($path) || !is_readable($path)) return null;
+    $raw = file_get_contents($path);
+    if ($raw === false || trim($raw) === '') return null;
+    $decoded = json_decode($raw, true);
+    return is_array($decoded) ? $decoded : null;
+}
+
+function writeJsonFile(string $path, array $payload): void
+{
+    ensureDir(dirname($path));
+    @file_put_contents($path, json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES), LOCK_EX);
+}
+
+function formatDurationLabel(int $seconds): string
+{
+    if ($seconds % 86400 === 0) return (string)($seconds / 86400) . ' 天';
+    if ($seconds % 3600 === 0) return (string)($seconds / 3600) . ' 小时';
+    if ($seconds % 60 === 0) return (string)($seconds / 60) . ' 分钟';
+    return $seconds . ' 秒';
+}
+
+function getGeoSourceInfo(): array
+{
+    $ttl = geoipCacheTtl();
+    $provider = geoipIpApiKey() !== '' ? 'ip-api.com Pro' : 'ip-api.com';
+    $note = '服务端代理查询并缓存结果，默认缓存 TTL：' . formatDurationLabel($ttl);
+    if (geoipIpApiKey() !== '') {
+        $note .= '，当前已启用 Pro key';
+    }
+    return [
+        'provider' => $provider,
+        'note' => $note,
+    ];
+}
+
+function geoipCachePath(string $ip): string
+{
+    return rtrim(geoipCacheDir(), '/\\') . '/' . sha1(strtolower(trim($ip))) . '.json';
+}
+
+function readGeoipCacheEntry(string $ip): ?array
+{
+    $entry = readJsonFile(geoipCachePath($ip));
+    if (!is_array($entry)) return null;
+    if ((int)($entry['schema'] ?? 0) !== GEOIP_CACHE_SCHEMA) return null;
+    if (!isset($entry['data']) || !is_array($entry['data'])) return null;
+    return $entry;
+}
+
+function writeGeoipCacheEntry(string $ip, array $data): void
+{
+    $now = time();
+    writeJsonFile(geoipCachePath($ip), [
+        'schema' => GEOIP_CACHE_SCHEMA,
+        'provider' => 'ip-api',
+        'fetched_at' => $now,
+        'expires_at' => $now + geoipCacheTtl(),
+        'data' => $data,
+    ]);
+}
+
+function readIpApiRateLimitState(): ?array
+{
+    $state = readJsonFile(geoipRateLimitFile());
+    if (!is_array($state)) return null;
+    if ((int)($state['schema'] ?? 0) !== GEOIP_RATE_LIMIT_SCHEMA) return null;
+    return $state;
+}
+
+function isIpApiRateLimited(): bool
+{
+    $state = readIpApiRateLimitState();
+    if (!is_array($state)) return false;
+    return (int)($state['blocked_until'] ?? 0) > time();
+}
+
+function writeIpApiRateLimitState(int $ttl, int $remaining = 0): void
+{
+    $now = time();
+    writeJsonFile(geoipRateLimitFile(), [
+        'schema' => GEOIP_RATE_LIMIT_SCHEMA,
+        'provider' => 'ip-api',
+        'updated_at' => $now,
+        'remaining' => max(0, $remaining),
+        'ttl' => max(0, $ttl),
+        'blocked_until' => $now + max(0, $ttl),
+    ]);
+}
+
+function clearIpApiRateLimitState(): void
+{
+    $path = geoipRateLimitFile();
+    if (is_file($path)) {
+        @unlink($path);
     }
 }
 
-function getLastScheduleAt(DateTimeZone $tz): DateTimeImmutable
+function buildIpApiUrl(string $ip): string
 {
-    $now = new DateTimeImmutable('now', $tz);
+    $fields = trim((string)(envValue('IP_API_FIELDS', DEFAULT_IP_API_FIELDS) ?? DEFAULT_IP_API_FIELDS));
+    if ($fields === '') $fields = DEFAULT_IP_API_FIELDS;
 
-    $day = max(1, min(28, (int)(envValue('XDB_META_UPDATE_DAY', '2') ?? '2')));
-    $hour = max(0, min(23, (int)(envValue('XDB_META_UPDATE_HOUR', '0') ?? '0')));
-    $minute = max(0, min(59, (int)(envValue('XDB_META_UPDATE_MINUTE', '0') ?? '0')));
-
-    $currentMonthScheduled = $now
-        ->setDate((int)$now->format('Y'), (int)$now->format('m'), $day)
-        ->setTime($hour, $minute, 0);
-
-    if ($now >= $currentMonthScheduled) {
-        return $currentMonthScheduled;
+    $params = [
+        'fields' => $fields,
+        'lang' => geoipIpApiLang(),
+    ];
+    $key = geoipIpApiKey();
+    if ($key !== '') {
+        $params['key'] = $key;
     }
 
-    return $currentMonthScheduled->modify('-1 month');
+    $query = http_build_query($params, '', '&', PHP_QUERY_RFC3986);
+
+    return geoipIpApiEndpoint() . rawurlencode($ip) . '?' . $query;
 }
 
-function getNextScheduleAt(DateTimeZone $tz): DateTimeImmutable
+function httpJsonRequest(string $url, int $timeout): array
 {
-    $now = new DateTimeImmutable('now', $tz);
-
-    $day = max(1, min(28, (int)(envValue('XDB_META_UPDATE_DAY', '2') ?? '2')));
-    $hour = max(0, min(23, (int)(envValue('XDB_META_UPDATE_HOUR', '0') ?? '0')));
-    $minute = max(0, min(59, (int)(envValue('XDB_META_UPDATE_MINUTE', '0') ?? '0')));
-
-    $currentMonthScheduled = $now
-        ->setDate((int)$now->format('Y'), (int)$now->format('m'), $day)
-        ->setTime($hour, $minute, 0);
-
-    if ($now < $currentMonthScheduled) {
-        return $currentMonthScheduled;
-    }
-
-    return $currentMonthScheduled->modify('+1 month');
-}
-
-function normalizeMetaPayload(array $json): array
-{
-    $versionKeys = ['version', 'ver', 'xdb_version', 'data_version', 'name', 'tag'];
-    $timeKeys = ['released_dt', 'released_at', 'update_time', 'updated_at', 'last_update', 'release_time', 'mtime', 'time', 'timestamp', 'date'];
-
-    $version = '';
-    foreach ($versionKeys as $key) {
-        if (!empty($json[$key])) {
-            $version = (string)$json[$key];
-            break;
+    $headers = [];
+    if (function_exists('curl_init')) {
+        $ch = curl_init($url);
+        if ($ch === false) {
+            return ['status' => 0, 'headers' => [], 'body' => null, 'error' => 'Failed to initialize cURL'];
         }
-    }
-    if ($version === '' && isset($json['data']) && is_array($json['data'])) {
-        foreach ($versionKeys as $key) {
-            if (!empty($json['data'][$key])) {
-                $version = (string)$json['data'][$key];
-                break;
-            }
-        }
-    }
 
-    $updated = '';
-    foreach ($timeKeys as $key) {
-        if (!empty($json[$key])) {
-            $updated = (string)$json[$key];
-            break;
-        }
-    }
-    if ($updated === '' && isset($json['data']) && is_array($json['data'])) {
-        foreach ($timeKeys as $key) {
-            if (!empty($json['data'][$key])) {
-                $updated = (string)$json['data'][$key];
-                break;
-            }
-        }
-    }
-
-    // 兼容新结构：data.model + data.srv_id
-    if ($version === '' && isset($json['data']) && is_array($json['data'])) {
-        $model = trim((string)($json['data']['model'] ?? ''));
-        $srvId = trim((string)($json['data']['srv_id'] ?? ''));
-        if ($model !== '' && $srvId !== '') {
-            $version = $model . ' / ' . $srvId;
-        } elseif ($model !== '') {
-            $version = $model;
-        } elseif ($srvId !== '') {
-            $version = $srvId;
-        }
-    }
-
-    return ['version' => $version, 'updated_at' => $updated];
-}
-
-function formatMetaTime(string $timeRaw, DateTimeZone $tz): string
-{
-    $timeRaw = trim($timeRaw);
-    if ($timeRaw === '') return '—';
-
-    // 对于 released_dt 这类无时区字符串，按源值直接显示，避免二次时区换算偏移。
-    if ((bool)preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $timeRaw)) {
-        return $timeRaw;
-    }
-
-    if (ctype_digit($timeRaw)) {
-        $timestamp = (int)$timeRaw;
-        if ($timestamp > 0) {
-            return (new DateTimeImmutable('@' . $timestamp))
-                ->setTimezone($tz)
-                ->format('Y-m-d H:i:s');
-        }
-    }
-
-    try {
-        return (new DateTimeImmutable($timeRaw))
-            ->setTimezone($tz)
-            ->format('Y-m-d H:i:s');
-    } catch (\Exception) {
-        return $timeRaw;
-    }
-}
-
-function getLocalDbUpdatedAt(DateTimeZone $tz): string
-{
-    $mtime = 0;
-    if (is_file(DB_V4)) $mtime = max($mtime, (int)filemtime(DB_V4));
-    if (is_file(DB_V6)) $mtime = max($mtime, (int)filemtime(DB_V6));
-    if ($mtime <= 0) return '—';
-    return (new DateTimeImmutable('@' . $mtime))->setTimezone($tz)->format('Y-m-d H:i:s');
-}
-
-function getXdbMetaInfo(): array
-{
-    $tz = getMetaTimezone();
-    $stateFile = envValue('XDB_UPDATE_STATE_FILE', __DIR__ . '/data/xdb_update_state.json') ?? (__DIR__ . '/data/xdb_update_state.json');
-    $cacheFile = envValue('XDB_META_CACHE_FILE', __DIR__ . '/data/xdb_meta_cache.json') ?? (__DIR__ . '/data/xdb_meta_cache.json');
-    $metaUrl = envValue('XDB_META_URL', DEFAULT_XDB_META_URL) ?? DEFAULT_XDB_META_URL;
-    $timeout = max(2, min(15, (int)(envValue('XDB_META_HTTP_TIMEOUT', '6') ?? '6')));
-    $localUpdated = getLocalDbUpdatedAt($tz);
-
-    $cached = null;
-    if (is_file($cacheFile)) {
-        $raw = file_get_contents($cacheFile);
-        if ($raw !== false) {
-            $decoded = json_decode($raw, true);
-            if (is_array($decoded)) $cached = $decoded;
-        }
-    }
-
-    $lastScheduleAt = getLastScheduleAt($tz);
-    $needRefresh = true;
-    if (is_array($cached) && !empty($cached['fetched_at'])) {
-        try {
-            $fetchedAt = new DateTimeImmutable((string)$cached['fetched_at'], $tz);
-            $needRefresh = $fetchedAt < $lastScheduleAt;
-        } catch (\Exception) {
-            $needRefresh = true;
-        }
-    }
-    if (!is_array($cached) || ((int)($cached['schema'] ?? 0) !== XDB_META_CACHE_SCHEMA)) {
-        $needRefresh = true;
-    }
-
-    $meta = is_array($cached) ? $cached : [];
-    if ($needRefresh) {
-        $ctx = stream_context_create([
-            'http' => [
-                'method'  => 'GET',
-                'timeout' => $timeout,
-                'header'  => "Accept: application/json\r\nUser-Agent: ip.bluecdn.com/meta-fetch\r\n",
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT => min(3, $timeout),
+            CURLOPT_TIMEOUT => $timeout,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_MAXREDIRS => 3,
+            CURLOPT_HTTPHEADER => [
+                'Accept: application/json',
+                'User-Agent: ip.bluecdn.com/geoip-proxy',
             ],
+            CURLOPT_HEADERFUNCTION => static function ($curl, string $line) use (&$headers): int {
+                $trimmed = trim($line);
+                if ($trimmed === '' || !str_contains($trimmed, ':')) return strlen($line);
+                [$name, $value] = explode(':', $trimmed, 2);
+                $headers[strtolower(trim($name))] = trim($value);
+                return strlen($line);
+            },
         ]);
 
-        $raw = @file_get_contents($metaUrl, false, $ctx);
-        if ($raw !== false && trim($raw) !== '') {
-            $decoded = json_decode($raw, true);
-            if (is_array($decoded)) {
-                $parsed = normalizeMetaPayload($decoded);
-                $meta = [
-                    'schema'     => XDB_META_CACHE_SCHEMA,
-                    'version'    => $parsed['version'] !== '' ? $parsed['version'] : (string)($meta['version'] ?? ''),
-                    'updated_at' => $parsed['updated_at'] !== '' ? $parsed['updated_at'] : (string)($meta['updated_at'] ?? ''),
-                    'fetched_at' => (new DateTimeImmutable('now', $tz))->format('Y-m-d H:i:s'),
-                    'source'     => 'remote',
-                ];
-                @file_put_contents($cacheFile, json_encode($meta, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT));
-            }
-        }
+        $body = curl_exec($ch);
+        $error = curl_error($ch);
+        $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+        curl_close($ch);
+
+        return [
+            'status' => $status,
+            'headers' => $headers,
+            'body' => is_string($body) ? $body : null,
+            'error' => $error !== '' ? $error : null,
+        ];
     }
 
-    $version = trim((string)($meta['version'] ?? ''));
-    if ($version === '') $version = 'unknown';
+    $ctx = stream_context_create([
+        'http' => [
+            'method' => 'GET',
+            'timeout' => $timeout,
+            'ignore_errors' => true,
+            'header' => "Accept: application/json\r\nUser-Agent: ip.bluecdn.com/geoip-proxy\r\n",
+        ],
+    ]);
+    $body = @file_get_contents($url, false, $ctx);
+    $status = 0;
+    $error = $body === false ? 'HTTP request failed' : null;
 
-    $updatedDisplay = formatMetaTime((string)($meta['updated_at'] ?? ''), $tz);
-    if ($updatedDisplay === '—') $updatedDisplay = $localUpdated;
-    $nextUpdateAt = getNextScheduleAt($tz)->format('Y-m-d H:i:s');
-
-    // 如果自动更新脚本有状态，页面优先显示实际更新状态
-    if (is_file($stateFile)) {
-        $raw = file_get_contents($stateFile);
-        if ($raw !== false && trim($raw) !== '') {
-            $st = json_decode($raw, true);
-            if (is_array($st)) {
-                if (!empty($st['last_success_at'])) {
-                    $updatedDisplay = formatMetaTime((string)$st['last_success_at'], $tz);
-                }
-                if (!empty($st['next_update_at'])) {
-                    $nextUpdateAt = formatMetaTime((string)$st['next_update_at'], $tz);
-                }
-            }
+    foreach (($http_response_header ?? []) as $line) {
+        if (preg_match('#^HTTP/\S+\s+(\d{3})#', $line, $m)) {
+            $status = (int)$m[1];
+            continue;
         }
+        if (!str_contains($line, ':')) continue;
+        [$name, $value] = explode(':', $line, 2);
+        $headers[strtolower(trim($name))] = trim($value);
     }
 
     return [
-        'version'      => $version,
-        'updated_at'   => $updatedDisplay,
-        'next_update_at' => $nextUpdateAt,
-        'localUpdated' => $localUpdated,
+        'status' => $status,
+        'headers' => $headers,
+        'body' => is_string($body) ? $body : null,
+        'error' => $error,
     ];
+}
+
+function applyIpApiRateLimitHeaders(array $headers): void
+{
+    $remaining = isset($headers['x-rl']) ? (int)$headers['x-rl'] : null;
+    $ttl = isset($headers['x-ttl']) ? (int)$headers['x-ttl'] : null;
+
+    if ($remaining !== null && $ttl !== null && $remaining <= 0 && $ttl > 0) {
+        writeIpApiRateLimitState($ttl, $remaining);
+        return;
+    }
+
+    if ($remaining !== null && $remaining > 0) {
+        clearIpApiRateLimitState();
+    }
+}
+
+function normalizeIpApiAsn(string $value): string
+{
+    $value = trim($value);
+    if ($value === '') return '';
+    if (preg_match('/\bAS\d+\b/i', $value, $m)) {
+        return strtoupper($m[0]);
+    }
+    return $value;
+}
+
+function geoipStatusFromMessage(string $message): int
+{
+    $message = strtolower(trim($message));
+    return match ($message) {
+        'private range', 'reserved range', 'invalid query' => 400,
+        default => 503,
+    };
+}
+
+function mapIpApiPayload(array $payload, string $ip): array
+{
+    $queryIp = trim((string)($payload['query'] ?? $ip));
+    $countryCode = strtoupper(trim((string)($payload['countryCode'] ?? '')));
+    $longitude = isset($payload['lon']) && is_numeric($payload['lon']) ? (float)$payload['lon'] : null;
+    $latitude = isset($payload['lat']) && is_numeric($payload['lat']) ? (float)$payload['lat'] : null;
+
+    return [
+        'ip' => $queryIp !== '' ? $queryIp : $ip,
+        'continent' => trim((string)($payload['continent'] ?? '')),
+        'country' => trim((string)($payload['country'] ?? '')),
+        'province' => trim((string)($payload['regionName'] ?? '')),
+        'city' => trim((string)($payload['city'] ?? '')),
+        'district' => trim((string)($payload['district'] ?? '')),
+        'isp' => trim((string)($payload['isp'] ?? '')),
+        'longitude' => $longitude,
+        'latitude' => $latitude,
+        'area_code' => '',
+        'phone_code' => '',
+        'zip_code' => trim((string)($payload['zip'] ?? '')),
+        'timezone' => trim((string)($payload['timezone'] ?? '')),
+        'currency' => trim((string)($payload['currency'] ?? '')),
+        'asn' => normalizeIpApiAsn((string)($payload['as'] ?? '')),
+        'country_code' => $countryCode,
+    ];
+}
+
+function lookupGeoip(string $ip): array
+{
+    $cached = readGeoipCacheEntry($ip);
+    $staleData = is_array($cached['data'] ?? null) ? $cached['data'] : null;
+    $expiresAt = (int)($cached['expires_at'] ?? 0);
+    if ($staleData !== null && $expiresAt >= time()) {
+        return ['status' => 200, 'data' => $staleData];
+    }
+
+    if (isIpApiRateLimited()) {
+        if ($staleData !== null) {
+            return ['status' => 200, 'data' => $staleData];
+        }
+        return ['status' => 503, 'error' => 'GeoIP upstream rate limited'];
+    }
+
+    $response = httpJsonRequest(buildIpApiUrl($ip), geoipHttpTimeout());
+    applyIpApiRateLimitHeaders($response['headers'] ?? []);
+
+    if (($response['status'] ?? 0) === 429) {
+        $ttl = (int)(($response['headers']['x-ttl'] ?? 60));
+        writeIpApiRateLimitState(max(1, $ttl));
+        if ($staleData !== null) {
+            return ['status' => 200, 'data' => $staleData];
+        }
+        return ['status' => 503, 'error' => 'GeoIP upstream rate limited'];
+    }
+
+    $body = is_string($response['body'] ?? null) ? trim((string)$response['body']) : '';
+    $payload = null;
+    if ($body !== '') {
+        $decoded = json_decode($body, true);
+        if (is_array($decoded)) {
+            $payload = $decoded;
+        }
+    }
+
+    if (is_array($payload) && (($payload['status'] ?? '') !== 'success')) {
+        $message = trim((string)($payload['message'] ?? 'GeoIP lookup failed'));
+        return ['status' => geoipStatusFromMessage($message), 'error' => $message];
+    }
+
+    if (($response['error'] ?? null) !== null || ($response['status'] ?? 0) < 200 || ($response['status'] ?? 0) >= 300 || $body === '') {
+        if ($staleData !== null) {
+            return ['status' => 200, 'data' => $staleData];
+        }
+        return ['status' => 503, 'error' => 'GeoIP lookup failed'];
+    }
+
+    if (!is_array($payload)) {
+        if ($staleData !== null) {
+            return ['status' => 200, 'data' => $staleData];
+        }
+        return ['status' => 503, 'error' => 'GeoIP lookup returned invalid JSON'];
+    }
+
+    $data = mapIpApiPayload($payload, $ip);
+    writeGeoipCacheEntry($ip, $data);
+    return ['status' => 200, 'data' => $data];
+}
+
+function queryAll(string $ip): array
+{
+    $lookup = lookupGeoip($ip);
+    if ((int)($lookup['status'] ?? 0) !== 200 || !isset($lookup['data']) || !is_array($lookup['data'])) {
+        return ['ip' => $ip];
+    }
+    return $lookup['data'];
 }
 
 // ─── 工具函数 ─────────────────────────────────────────────
@@ -380,63 +503,6 @@ function isCliLikeRequest(): bool
 function buildRootCliIpSummary(string $clientIp): string
 {
     return trim($clientIp);
-}
-
-function queryRegion(string $ip): ?string
-{
-    $version = getIpVersion($ip);
-    $dbFile  = match ($version) {
-        4 => DB_V4,
-        6 => DB_V6,
-        default => null,
-    };
-    if ($dbFile === null) return null;
-
-    $ipVersion = $version === 4 ? IPv4::default() : IPv6::default();
-
-    try {
-        $vIndex   = Util::loadVectorIndexFromFile($dbFile);
-        $searcher = Searcher::newWithVectorIndex($ipVersion, $dbFile, $vIndex);
-        $region   = $searcher->search($ip);
-        $searcher->close();
-        return $region !== '' ? $region : null;
-    } catch (\Exception) {
-        return null;
-    }
-}
-
-function parseRegion(string $region): array
-{
-    $parts = array_pad(explode('|', $region), 17, '');
-    $clean = static fn(string $v): string => ($v === '0' || $v === '') ? '' : $v;
-
-    $lon = $parts[6] !== '' ? (float)$parts[6] : null;
-    $lat = $parts[7] !== '' ? (float)$parts[7] : null;
-
-    return [
-        'continent'    => $clean($parts[0]),
-        'country'      => $clean($parts[1]),
-        'province'     => $clean($parts[2]),
-        'city'         => $clean($parts[3]),
-        'district'     => $clean($parts[4]),
-        'isp'          => $clean($parts[5]),
-        'longitude'    => $lon,
-        'latitude'     => $lat,
-        'area_code'    => $clean($parts[8]),
-        'phone_code'   => $clean($parts[9]),
-        'zip_code'     => $clean($parts[10]),
-        'timezone'     => $clean($parts[11]),
-        'currency'     => $clean($parts[12]),
-        'asn'          => $clean($parts[13]),
-        'country_code' => $clean($parts[16]),
-    ];
-}
-
-function queryAll(string $ip): array
-{
-    $region = queryRegion($ip);
-    if ($region === null) return ['ip' => $ip];
-    return array_merge(['ip' => $ip], parseRegion($region));
 }
 
 function getGeoipQueryableFields(): array
@@ -530,9 +596,9 @@ function htmlResponse(string $html, int $status = 200): void
 function homePageHtml(?string $queryIp = null, string $context = 'home'): string
 {
     $year = date('Y');
-    $xdbMeta = getXdbMetaInfo();
+    $geoSource = getGeoSourceInfo();
     $headerHtml = renderSiteHeader($context);
-    $footerHtml = renderSiteFooter(['/', '/ip', '/jsonip', '/geoip', '/geoip/{ip}'], $xdbMeta, (int)$year);
+    $footerHtml = renderSiteFooter(['/', '/ip', '/jsonip', '/geoip', '/geoip/{ip}'], $geoSource, (int)$year);
     $fieldConfig = [
         ['key' => 'ip',           'label' => 'IP 地址'],
         ['key' => 'asn',          'label' => 'ASN'],
@@ -639,9 +705,9 @@ HTML;
 function apiPageHtml(): string
 {
     $year = date('Y');
-    $xdbMeta = getXdbMetaInfo();
+    $geoSource = getGeoSourceInfo();
     $headerHtml = renderSiteHeader('api');
-    $footerHtml = renderSiteFooter(['/ip', '/jsonip', '/geoip', '/geoip/{ip}'], $xdbMeta, (int)$year);
+    $footerHtml = renderSiteFooter(['/ip', '/jsonip', '/geoip', '/geoip/{ip}'], $geoSource, (int)$year);
     $headAssetLinks = renderHeadAssetLinks();
     return <<<HTML
 <!doctype html>
@@ -1167,9 +1233,9 @@ HTML;
 function aboutPageHtml(): string
 {
     $year = date('Y');
-    $xdbMeta = getXdbMetaInfo();
+    $geoSource = getGeoSourceInfo();
     $headerHtml = renderSiteHeader('about');
-    $footerHtml = renderSiteFooter(['/ip', '/jsonip', '/geoip', '/geoip/{ip}'], $xdbMeta, (int)$year);
+    $footerHtml = renderSiteFooter(['/ip', '/jsonip', '/geoip', '/geoip/{ip}'], $geoSource, (int)$year);
     $headAssetLinks = renderHeadAssetLinks();
 
     return <<<HTML
@@ -1246,7 +1312,7 @@ function aboutPageHtml(): string
       <div class="content-grid content-grid-2">
         <article class="content-card">
           <h3><i class="fa-solid fa-database" aria-hidden="true"></i><span>数据库来源</span></h3>
-          <p>使用 ip2region 付费版数据库，覆盖 IPv4/IPv6 双栈查询能力。</p>
+          <p>服务端通过 ip-api.com 获取 GeoIP 数据，并使用本地缓存降低上游请求频率。</p>
         </article>
         <article class="content-card">
           <h3><i class="fa-solid fa-arrows-rotate" aria-hidden="true"></i><span>更新机制</span></h3>
@@ -1265,9 +1331,9 @@ HTML;
 function contactPageHtml(): string
 {
     $year = date('Y');
-    $xdbMeta = getXdbMetaInfo();
+    $geoSource = getGeoSourceInfo();
     $headerHtml = renderSiteHeader('contact');
-    $footerHtml = renderSiteFooter(['/ip', '/jsonip', '/geoip', '/geoip/{ip}'], $xdbMeta, (int)$year);
+    $footerHtml = renderSiteFooter(['/ip', '/jsonip', '/geoip', '/geoip/{ip}'], $geoSource, (int)$year);
     $headAssetLinks = renderHeadAssetLinks();
 
     return <<<HTML
@@ -1359,7 +1425,14 @@ if (preg_match('#^/geoip/([^/]+)$#', $path, $m)) {
     if (getIpVersion($queryIp) === 0) {
         jsonResponse(['error' => 'Invalid IP address', 'input' => $queryIp], 400);
     }
-    $data = queryAll($queryIp);
+    $lookup = lookupGeoip($queryIp);
+    if ((int)($lookup['status'] ?? 0) !== 200 || !isset($lookup['data']) || !is_array($lookup['data'])) {
+        jsonResponse([
+            'error' => (string)($lookup['error'] ?? 'GeoIP lookup failed'),
+            'input' => $queryIp,
+        ], (int)($lookup['status'] ?? 503));
+    }
+    $data = $lookup['data'];
     $field = trim((string)($_GET['field'] ?? ''));
     if ($field !== '') {
         jsonResponse(filterGeoipByField($data, $field));
@@ -1369,7 +1442,14 @@ if (preg_match('#^/geoip/([^/]+)$#', $path, $m)) {
 
 // /geoip
 if ($path === '/geoip') {
-    $data = queryAll($clientIp);
+    $lookup = lookupGeoip($clientIp);
+    if ((int)($lookup['status'] ?? 0) !== 200 || !isset($lookup['data']) || !is_array($lookup['data'])) {
+        jsonResponse([
+            'error' => (string)($lookup['error'] ?? 'GeoIP lookup failed'),
+            'input' => $clientIp,
+        ], (int)($lookup['status'] ?? 503));
+    }
+    $data = $lookup['data'];
     $field = trim((string)($_GET['field'] ?? ''));
     if ($field !== '') {
         jsonResponse(filterGeoipByField($data, $field));
