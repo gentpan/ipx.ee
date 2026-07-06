@@ -26,10 +26,10 @@ const (
 	defaultIPAPIEndpoint = "https://pro.ip-api.com/json/"
 	defaultIPAPIKey      = "Yl1qHz5nPSptyfw"
 	defaultIPAPIFields   = "21180127"
-	defaultIPAPILang     = "zh-CN"
+	defaultIPAPILang     = "en"
 	defaultGeoHTTPTimout = 5
 	defaultGeoCacheTTL   = 86400
-	geoCacheSchema       = 6
+	geoCacheSchema       = 7
 )
 
 type app struct {
@@ -52,29 +52,59 @@ type geoIPClient struct {
 }
 
 type geoCacheEntry struct {
-	Schema    int        `json:"schema"`
-	FetchedAt int64      `json:"fetched_at"`
-	ExpiresAt int64      `json:"expires_at"`
-	Data      geoPayload `json:"data"`
+	Schema    int           `json:"schema"`
+	FetchedAt int64         `json:"fetched_at"`
+	ExpiresAt int64         `json:"expires_at"`
+	Data      geoAPIPayload `json:"data"`
 }
 
 type geoPayload struct {
-	IP          string   `json:"ip"`
-	Lookup      string   `json:"lookup"`
-	ASN         string   `json:"asn"`
-	ASName      string   `json:"as_name"`
-	ISP         string   `json:"isp"`
-	Org         string   `json:"org"`
-	IsProxy     *bool    `json:"is_proxy"`
-	IsHosting   *bool    `json:"is_hosting"`
-	IsMobile    *bool    `json:"is_mobile"`
-	Country     string   `json:"country"`
-	CountryCode string   `json:"country_code"`
-	Province    string   `json:"province"`
-	City        string   `json:"city"`
-	Latitude    *float64 `json:"latitude"`
-	Longitude   *float64 `json:"longitude"`
-	Flag        string   `json:"flag"`
+	IP            string   `json:"ip"`
+	Lookup        string   `json:"lookup"`
+	Continent     string   `json:"continent,omitempty"`
+	ContinentCode string   `json:"continent_code,omitempty"`
+	ASN           string   `json:"asn,omitempty"`
+	ASName        string   `json:"as_name,omitempty"`
+	ISP           string   `json:"isp,omitempty"`
+	Org           string   `json:"org,omitempty"`
+	IsProxy       *bool    `json:"is_proxy,omitempty"`
+	IsHosting     *bool    `json:"is_hosting,omitempty"`
+	IsMobile      *bool    `json:"is_mobile,omitempty"`
+	Country       string   `json:"country,omitempty"`
+	CountryCode   string   `json:"country_code,omitempty"`
+	Region        string   `json:"region,omitempty"`
+	Province      string   `json:"province,omitempty"`
+	City          string   `json:"city,omitempty"`
+	District      string   `json:"district,omitempty"`
+	Zip           string   `json:"zip,omitempty"`
+	Latitude      *float64 `json:"latitude,omitempty"`
+	Longitude     *float64 `json:"longitude,omitempty"`
+	Timezone      string   `json:"timezone,omitempty"`
+	Offset        *int     `json:"offset,omitempty"`
+	Currency      string   `json:"currency,omitempty"`
+	Reverse       string   `json:"reverse,omitempty"`
+	Flag          string   `json:"flag,omitempty"`
+}
+
+type geoAPIPayload struct {
+	OK        bool           `json:"ok"`
+	Data      geoPayload     `json:"data"`
+	Raw       map[string]any `json:"raw,omitempty"`
+	Fields    string         `json:"fields"`
+	Lang      string         `json:"lang"`
+	Provider  string         `json:"provider"`
+	RateLimit *rateLimitInfo `json:"rate_limit,omitempty"`
+}
+
+type rateLimitInfo struct {
+	Remaining *int `json:"remaining,omitempty"`
+	ResetIn   *int `json:"reset_in,omitempty"`
+}
+
+type lookupOptions struct {
+	Fields string
+	Lang   string
+	Raw    bool
 }
 
 type pageData struct {
@@ -181,6 +211,10 @@ func (a *app) handleRequest(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, map[string]any{"ok": true}, http.StatusOK)
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		a.handleLocalAPI(w, r)
+		return
+	}
 
 	host := normalizeHost(r.Host)
 	switch host {
@@ -227,7 +261,7 @@ func (a *app) handleSiteHost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if isCLIRequest(r) {
-		a.respondGeoLookup(w, query, query)
+		a.respondGeoLookup(w, r, query, query)
 		return
 	}
 
@@ -273,7 +307,7 @@ func (a *app) handleIPOnlyHost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if wantsJSON {
-		a.respondGeoLookup(w, clientIP, clientIP)
+		a.respondGeoLookup(w, r, clientIP, clientIP)
 		return
 	}
 
@@ -298,7 +332,11 @@ func (a *app) handleAPIHost(w http.ResponseWriter, r *http.Request) {
 			jsonResponse(w, map[string]any{"error": "Unable to detect client IP"}, http.StatusBadRequest)
 			return
 		}
-		a.respondGeoLookup(w, clientIP, clientIP)
+		if isNonPublicIP(clientIP) {
+			jsonResponse(w, localGeoPayload(clientIP, optionsFromRequest(r)), http.StatusOK)
+			return
+		}
+		a.respondGeoLookup(w, r, clientIP, clientIP)
 		return
 	case strings.HasPrefix(r.URL.Path, "/ip/"):
 		query := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/ip/"))
@@ -307,7 +345,7 @@ func (a *app) handleAPIHost(w http.ResponseWriter, r *http.Request) {
 			jsonResponse(w, map[string]any{"error": "Missing query"}, http.StatusBadRequest)
 			return
 		}
-		a.respondGeoLookup(w, query, query)
+		a.respondGeoLookup(w, r, query, query)
 		return
 	case r.URL.Path != "/":
 		query := strings.TrimPrefix(r.URL.Path, "/")
@@ -316,17 +354,67 @@ func (a *app) handleAPIHost(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		a.respondGeoLookup(w, query, query)
+		a.respondGeoLookup(w, r, query, query)
 		return
 	default:
 		http.NotFound(w, r)
 	}
 }
 
-func (a *app) respondGeoLookup(w http.ResponseWriter, lookup, fallbackIP string) {
-	data, status, err := a.geo.Lookup(lookup)
+func (a *app) handleLocalAPI(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case r.URL.Path == "/api/health":
+		jsonResponse(w, map[string]any{"ok": true}, http.StatusOK)
+		return
+	case r.URL.Path == "/api/fields":
+		jsonResponse(w, apiFields(), http.StatusOK)
+		return
+	case r.URL.Path == "/api/ip":
+		clientIP := getClientIP(r)
+		if clientIP == "" {
+			jsonResponse(w, map[string]any{"error": "Unable to detect client IP"}, http.StatusBadRequest)
+			return
+		}
+		if isNonPublicIP(clientIP) {
+			jsonResponse(w, localGeoPayload(clientIP, optionsFromRequest(r)), http.StatusOK)
+			return
+		}
+		a.respondGeoLookup(w, r, clientIP, clientIP)
+		return
+	case strings.HasPrefix(r.URL.Path, "/api/lookup/"):
+		query := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/api/lookup/"))
+		query = decodePathValue(query)
+		if query == "" {
+			jsonResponse(w, map[string]any{"error": "Missing query"}, http.StatusBadRequest)
+			return
+		}
+		a.respondGeoLookup(w, r, query, query)
+		return
+	case strings.HasPrefix(r.URL.Path, "/api/raw/"):
+		query := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/api/raw/"))
+		query = decodePathValue(query)
+		if query == "" {
+			jsonResponse(w, map[string]any{"error": "Missing query"}, http.StatusBadRequest)
+			return
+		}
+		opts := optionsFromRequest(r)
+		opts.Raw = true
+		a.respondGeoLookupWithOptions(w, query, query, opts)
+		return
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (a *app) respondGeoLookup(w http.ResponseWriter, r *http.Request, lookup, fallbackIP string) {
+	a.respondGeoLookupWithOptions(w, lookup, fallbackIP, optionsFromRequest(r))
+}
+
+func (a *app) respondGeoLookupWithOptions(w http.ResponseWriter, lookup, fallbackIP string, opts lookupOptions) {
+	data, status, err := a.geo.Lookup(lookup, opts)
 	if err != nil {
 		jsonResponse(w, map[string]any{
+			"ok":     false,
 			"error":  err.Error(),
 			"lookup": lookup,
 			"ip":     fallbackIP,
@@ -336,38 +424,72 @@ func (a *app) respondGeoLookup(w http.ResponseWriter, lookup, fallbackIP string)
 	jsonResponse(w, data, status)
 }
 
-func (g *geoIPClient) Lookup(query string) (geoPayload, int, error) {
+func localGeoPayload(ip string, opts lookupOptions) geoAPIPayload {
+	opts = normalizeLookupOptions(opts, defaultIPAPIFields, defaultIPAPILang)
+	localCountry := "Local network"
+	if opts.Lang == "zh-CN" {
+		localCountry = "本地网络"
+	}
+	data := geoPayload{
+		IP:      ip,
+		Lookup:  ip,
+		ISP:     "Local development",
+		Org:     "Loopback / private network",
+		Country: localCountry,
+	}
+	raw := map[string]any{
+		"status":  "success",
+		"query":   ip,
+		"country": localCountry,
+		"isp":     data.ISP,
+		"org":     data.Org,
+	}
+	payload := geoAPIPayload{
+		OK:       true,
+		Data:     data,
+		Fields:   opts.Fields,
+		Lang:     opts.Lang,
+		Provider: "local",
+	}
+	if opts.Raw {
+		payload.Raw = raw
+	}
+	return payload
+}
+
+func (g *geoIPClient) Lookup(query string, opts lookupOptions) (geoAPIPayload, int, error) {
 	query = strings.TrimSpace(query)
+	opts = normalizeLookupOptions(opts, g.fields, g.lang)
 	if query == "" {
-		return geoPayload{}, http.StatusBadRequest, errors.New("Missing query")
+		return geoAPIPayload{}, http.StatusBadRequest, errors.New("Missing query")
 	}
 
-	if cached, ok := g.readCache(query); ok {
+	if cached, ok := g.readCache(query, opts); ok {
 		return cached, http.StatusOK, nil
 	}
 
-	req, err := http.NewRequest(http.MethodGet, g.buildURL(query), nil)
+	req, err := http.NewRequest(http.MethodGet, g.buildURL(query, opts), nil)
 	if err != nil {
-		return geoPayload{}, http.StatusServiceUnavailable, errors.New("GeoIP request build failed")
+		return geoAPIPayload{}, http.StatusServiceUnavailable, errors.New("GeoIP request build failed")
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "ipx.ee/geoip")
 
 	resp, err := g.httpClient.Do(req)
 	if err != nil {
-		return geoPayload{}, http.StatusServiceUnavailable, errors.New("GeoIP lookup failed")
+		return geoAPIPayload{}, http.StatusServiceUnavailable, errors.New("GeoIP lookup failed")
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return geoPayload{}, http.StatusServiceUnavailable, errors.New("GeoIP lookup failed")
+		return geoAPIPayload{}, http.StatusServiceUnavailable, errors.New("GeoIP lookup failed")
 	}
 
 	var payload map[string]any
 	if strings.TrimSpace(string(body)) != "" {
 		if err := json.Unmarshal(body, &payload); err != nil {
-			return geoPayload{}, http.StatusServiceUnavailable, errors.New("GeoIP lookup returned invalid JSON")
+			return geoAPIPayload{}, http.StatusServiceUnavailable, errors.New("GeoIP lookup returned invalid JSON")
 		}
 	}
 
@@ -377,57 +499,70 @@ func (g *geoIPClient) Lookup(query string) (geoPayload, int, error) {
 		if message == "" {
 			message = "GeoIP lookup failed"
 		}
-		return geoPayload{}, statusFromMessage(message), errors.New(message)
+		return geoAPIPayload{}, statusFromMessage(message), errors.New(message)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return geoPayload{}, http.StatusServiceUnavailable, errors.New("GeoIP lookup failed")
+		return geoAPIPayload{}, http.StatusServiceUnavailable, errors.New("GeoIP lookup failed")
 	}
 	if len(payload) == 0 || !hasGeoPayload(payload) {
-		return geoPayload{}, http.StatusNotFound, errors.New("GeoIP lookup returned no data")
+		return geoAPIPayload{}, http.StatusNotFound, errors.New("GeoIP lookup returned no data")
 	}
 
-	data := mapGeoPayload(query, payload)
-	g.writeCache(query, data)
+	data := geoAPIPayload{
+		OK:        true,
+		Data:      mapGeoPayload(query, payload),
+		Fields:    opts.Fields,
+		Lang:      opts.Lang,
+		Provider:  "ip-api.com",
+		RateLimit: rateLimitFromHeaders(resp.Header),
+	}
+	if opts.Raw {
+		data.Raw = payload
+	}
+	g.writeCache(query, opts, data)
 	return data, http.StatusOK, nil
 }
 
-func (g *geoIPClient) buildURL(query string) string {
+func (g *geoIPClient) buildURL(query string, opts lookupOptions) string {
 	values := url.Values{}
-	values.Set("key", g.apiKey)
-	values.Set("fields", g.fields)
-	values.Set("lang", g.lang)
+	if g.apiKey != "" {
+		values.Set("key", g.apiKey)
+	}
+	values.Set("fields", opts.Fields)
+	values.Set("lang", opts.Lang)
 	return g.endpoint + url.PathEscape(query) + "?" + values.Encode()
 }
 
-func (g *geoIPClient) cachePath(query string) string {
+func (g *geoIPClient) cachePath(query string, opts lookupOptions) string {
 	cacheKey := strings.Join([]string{
 		strings.ToLower(strings.TrimSpace(query)),
 		g.endpoint,
-		g.fields,
-		g.lang,
+		opts.Fields,
+		opts.Lang,
+		strconv.FormatBool(opts.Raw),
 	}, "|")
 	sum := sha1.Sum([]byte(cacheKey))
 	return filepath.Join(g.cacheDir, fmt.Sprintf("%x.json", sum))
 }
 
-func (g *geoIPClient) readCache(query string) (geoPayload, bool) {
-	raw, err := os.ReadFile(g.cachePath(query))
+func (g *geoIPClient) readCache(query string, opts lookupOptions) (geoAPIPayload, bool) {
+	raw, err := os.ReadFile(g.cachePath(query, opts))
 	if err != nil {
-		return geoPayload{}, false
+		return geoAPIPayload{}, false
 	}
 
 	var entry geoCacheEntry
 	if err := json.Unmarshal(raw, &entry); err != nil {
-		return geoPayload{}, false
+		return geoAPIPayload{}, false
 	}
 	if entry.Schema != geoCacheSchema || entry.ExpiresAt < time.Now().Unix() {
-		return geoPayload{}, false
+		return geoAPIPayload{}, false
 	}
 	return entry.Data, true
 }
 
-func (g *geoIPClient) writeCache(query string, data geoPayload) {
+func (g *geoIPClient) writeCache(query string, opts lookupOptions, data geoAPIPayload) {
 	_ = ensureDir(g.cacheDir)
 	entry := geoCacheEntry{
 		Schema:    geoCacheSchema,
@@ -439,7 +574,7 @@ func (g *geoIPClient) writeCache(query string, data geoPayload) {
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(g.cachePath(query), body, 0o644)
+	_ = os.WriteFile(g.cachePath(query, opts), body, 0o644)
 }
 
 func mapGeoPayload(lookup string, payload map[string]any) geoPayload {
@@ -458,32 +593,155 @@ func mapGeoPayload(lookup string, payload map[string]any) geoPayload {
 	}
 
 	return geoPayload{
-		IP:          ip,
-		Lookup:      lookup,
-		ASN:         asn,
-		ASName:      preferredASName(rawASName, org, isp),
-		ISP:         isp,
-		Org:         org,
-		IsProxy:     toBoolPtr(payload["proxy"]),
-		IsHosting:   toBoolPtr(payload["hosting"]),
-		IsMobile:    toBoolPtr(payload["mobile"]),
-		Country:     strings.TrimSpace(toString(payload["country"])),
-		CountryCode: countryCode,
-		Province:    strings.TrimSpace(toString(payload["regionName"])),
-		City:        strings.TrimSpace(toString(payload["city"])),
-		Latitude:    toFloatPtr(payload["lat"]),
-		Longitude:   toFloatPtr(payload["lon"]),
-		Flag:        flag,
+		IP:            ip,
+		Lookup:        lookup,
+		Continent:     strings.TrimSpace(toString(payload["continent"])),
+		ContinentCode: strings.TrimSpace(toString(payload["continentCode"])),
+		ASN:           asn,
+		ASName:        preferredASName(rawASName, org, isp),
+		ISP:           isp,
+		Org:           org,
+		IsProxy:       toBoolPtr(payload["proxy"]),
+		IsHosting:     toBoolPtr(payload["hosting"]),
+		IsMobile:      toBoolPtr(payload["mobile"]),
+		Country:       strings.TrimSpace(toString(payload["country"])),
+		CountryCode:   countryCode,
+		Region:        strings.TrimSpace(toString(payload["region"])),
+		Province:      strings.TrimSpace(toString(payload["regionName"])),
+		City:          strings.TrimSpace(toString(payload["city"])),
+		District:      strings.TrimSpace(toString(payload["district"])),
+		Zip:           strings.TrimSpace(toString(payload["zip"])),
+		Latitude:      toFloatPtr(payload["lat"]),
+		Longitude:     toFloatPtr(payload["lon"]),
+		Timezone:      strings.TrimSpace(toString(payload["timezone"])),
+		Offset:        toIntPtr(payload["offset"]),
+		Currency:      strings.TrimSpace(toString(payload["currency"])),
+		Reverse:       strings.TrimSpace(toString(payload["reverse"])),
+		Flag:          flag,
 	}
 }
 
 func hasGeoPayload(payload map[string]any) bool {
-	for _, key := range []string{"country", "countryCode", "region", "regionName", "city", "isp", "org", "as", "asname", "lat", "lon"} {
+	for _, key := range []string{"continent", "continentCode", "country", "countryCode", "region", "regionName", "city", "district", "zip", "timezone", "currency", "isp", "org", "as", "asname", "reverse", "lat", "lon", "query"} {
 		if strings.TrimSpace(toString(payload[key])) != "" {
 			return true
 		}
 	}
 	return false
+}
+
+func optionsFromRequest(r *http.Request) lookupOptions {
+	rawText := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("raw")))
+	return lookupOptions{
+		Fields: strings.TrimSpace(r.URL.Query().Get("fields")),
+		Lang:   strings.TrimSpace(r.URL.Query().Get("lang")),
+		Raw:    rawText == "1" || rawText == "true" || rawText == "yes",
+	}
+}
+
+func normalizeLookupOptions(opts lookupOptions, defaultFields, defaultLang string) lookupOptions {
+	opts.Fields = sanitizeFields(opts.Fields, defaultFields)
+	opts.Lang = sanitizeLang(opts.Lang, defaultLang)
+	return opts
+}
+
+func sanitizeFields(fields, fallback string) string {
+	fields = strings.TrimSpace(fields)
+	if fields == "" {
+		fields = fallback
+	}
+	if fields == "" {
+		fields = strings.Join(defaultIPAPIFieldNames(), ",")
+	}
+	fields = strings.ReplaceAll(fields, " ", "")
+	return fields
+}
+
+func sanitizeLang(lang, fallback string) string {
+	lang = strings.TrimSpace(lang)
+	if lang == "" {
+		lang = fallback
+	}
+	switch lang {
+	case "en", "de", "es", "pt-BR", "fr", "ja", "zh-CN", "ru":
+		return lang
+	default:
+		return "en"
+	}
+}
+
+func rateLimitFromHeaders(header http.Header) *rateLimitInfo {
+	rl := toHeaderIntPtr(header.Get("X-Rl"))
+	ttl := toHeaderIntPtr(header.Get("X-Ttl"))
+	if rl == nil && ttl == nil {
+		return nil
+	}
+	return &rateLimitInfo{Remaining: rl, ResetIn: ttl}
+}
+
+func toHeaderIntPtr(value string) *int {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return nil
+	}
+	return &parsed
+}
+
+func defaultIPAPIFieldNames() []string {
+	return []string{
+		"status", "message", "continent", "continentCode", "country", "countryCode",
+		"region", "regionName", "city", "district", "zip", "lat", "lon", "timezone",
+		"offset", "currency", "isp", "org", "as", "asname", "reverse", "mobile",
+		"proxy", "hosting", "query",
+	}
+}
+
+func apiFields() map[string]any {
+	type field struct {
+		Name        string `json:"name"`
+		OutputKey   string `json:"output_key,omitempty"`
+		Description string `json:"description"`
+		Type        string `json:"type"`
+	}
+
+	fields := []field{
+		{"status", "", "success or fail", "string"},
+		{"message", "", "failure reason such as private range, reserved range, or invalid query", "string"},
+		{"continent", "continent", "Continent name", "string"},
+		{"continentCode", "continent_code", "Two-letter continent code", "string"},
+		{"country", "country", "Country name", "string"},
+		{"countryCode", "country_code", "Two-letter country code", "string"},
+		{"region", "region", "Region/state short code", "string"},
+		{"regionName", "province", "Region/state name", "string"},
+		{"city", "city", "City name", "string"},
+		{"district", "district", "District or subdivision", "string"},
+		{"zip", "zip", "Zip or postal code", "string"},
+		{"lat", "latitude", "Latitude", "float"},
+		{"lon", "longitude", "Longitude", "float"},
+		{"timezone", "timezone", "Timezone identifier", "string"},
+		{"offset", "offset", "Timezone UTC DST offset in seconds", "int"},
+		{"currency", "currency", "National currency code", "string"},
+		{"isp", "isp", "ISP name", "string"},
+		{"org", "org", "Organization name", "string"},
+		{"as", "asn", "AS number and organization", "string"},
+		{"asname", "as_name", "AS name", "string"},
+		{"reverse", "reverse", "Reverse DNS hostname", "string"},
+		{"mobile", "is_mobile", "Mobile network flag", "bool"},
+		{"proxy", "is_proxy", "Proxy, VPN, or Tor flag", "bool"},
+		{"hosting", "is_hosting", "Hosting, colocated, or data center flag", "bool"},
+		{"query", "ip", "IP used for the query", "string"},
+	}
+
+	return map[string]any{
+		"fields":        fields,
+		"default":       defaultIPAPIFields,
+		"default_names": defaultIPAPIFieldNames(),
+		"languages":     []string{"en", "de", "es", "pt-BR", "fr", "ja", "zh-CN", "ru"},
+	}
 }
 
 func statusFromMessage(message string) int {
@@ -567,6 +825,14 @@ func ipFamily(ip string) string {
 	return "ipv6"
 }
 
+func isNonPublicIP(ip string) bool {
+	parsed := net.ParseIP(strings.TrimSpace(ip))
+	if parsed == nil {
+		return false
+	}
+	return parsed.IsLoopback() || parsed.IsPrivate() || parsed.IsUnspecified()
+}
+
 func normalizeHost(host string) string {
 	host = strings.TrimSpace(strings.ToLower(host))
 	if strings.Contains(host, ":") {
@@ -637,6 +903,18 @@ func toFloatPtr(v any) *float64 {
 		return nil
 	}
 	return &f
+}
+
+func toIntPtr(v any) *int {
+	s := strings.TrimSpace(toString(v))
+	if s == "" {
+		return nil
+	}
+	i, err := strconv.Atoi(s)
+	if err != nil {
+		return nil
+	}
+	return &i
 }
 
 func toBoolPtr(v any) *bool {
@@ -721,7 +999,7 @@ func renderTemplate(tpl string, data any) string {
 }
 
 const siteTemplate = `<!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
