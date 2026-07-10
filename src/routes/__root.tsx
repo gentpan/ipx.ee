@@ -6,6 +6,11 @@ import {
   createRootRoute,
 } from '@tanstack/react-router'
 import '@ogtirth/liquid-glass-oss/styles.css'
+import {
+  BootLoaderController,
+  bootLoaderMarkup,
+  themeBootScript,
+} from '../components/boot-loader'
 import { GlassBackgroundProvider, GlassBackgroundWallpaper } from '../components/glass'
 import '../styles.css'
 
@@ -21,8 +26,20 @@ export const Route = createRootRoute({
       { title: 'IPX.EE - IP Address Lookup' },
     ],
     links: [
-      { rel: 'icon', href: '/favicon.ico' },
+      { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' },
+      { rel: 'shortcut icon', href: '/favicon.ico' },
+      { rel: 'icon', type: 'image/png', sizes: '48x48', href: '/favicon-48x48.png' },
+      { rel: 'icon', type: 'image/png', sizes: '32x32', href: '/favicon-32x32.png' },
+      { rel: 'icon', type: 'image/png', sizes: '16x16', href: '/favicon-16x16.png' },
+      { rel: 'apple-touch-icon', sizes: '180x180', href: '/apple-touch-icon.png' },
       { rel: 'manifest', href: '/site.webmanifest' },
+      { rel: 'preload', href: '/assets/images/bg-light.webp', as: 'image', type: 'image/webp' },
+      { rel: 'preload', href: '/assets/images/bg-dark.webp', as: 'image', type: 'image/webp' },
+    ],
+    scripts: [
+      {
+        children: themeBootScript,
+      },
     ],
   }),
   component: RootComponent,
@@ -38,13 +55,15 @@ function RootComponent() {
 
 function RootDocument({ children }: Readonly<{ children: ReactNode }>) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
         <HeadContent />
       </head>
       <body>
+        <div dangerouslySetInnerHTML={{ __html: bootLoaderMarkup }} />
         <GlassBackgroundProvider>
           <GlassBackgroundWallpaper />
+          <BootLoaderController />
           <div className="app-root">{children}</div>
         </GlassBackgroundProvider>
         <Scripts />

@@ -2,17 +2,20 @@
 
 # IPX.EE
 
-**IP 地理信息查询 - TanStack Start + Go**
+**快速、现代的 IP 地址与 GeoIP 查询服务**
 
 <p>
-  <img src="https://img.shields.io/badge/TanStack%20Start-RC-ff4154?style=for-the-badge" alt="TanStack Start">
-  <img src="https://img.shields.io/badge/Base%20UI-1.6-111111?style=for-the-badge" alt="Base UI">
-  <img src="https://img.shields.io/badge/Go-1.26-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go">
+  <img src="https://img.shields.io/badge/TanStack%20Start-1.121-ff4154?style=for-the-badge" alt="TanStack Start">
+  <img src="https://img.shields.io/badge/React-19-61dafb?style=for-the-badge&logo=react&logoColor=111827" alt="React 19">
+  <img src="https://img.shields.io/badge/Vite-8-646cff?style=for-the-badge&logo=vite&logoColor=white" alt="Vite 8">
+  <img src="https://img.shields.io/badge/Go-1.25-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go 1.25">
   <img src="https://img.shields.io/badge/license-MIT-brightgreen?style=for-the-badge" alt="License">
 </p>
 
 <p>
-  <a href="https://ipx.ee">ipx.ee</a>
+  <a href="https://ipx.ee">网站</a>
+  ·
+  <a href="https://api.ipx.ee">API</a>
 </p>
 
 </div>
@@ -21,69 +24,88 @@
 
 ## 概述
 
-IPX.EE 是一个 IP 地址地理信息查询服务。当前主线采用 TanStack Start 构建首页与交互界面，Go 提供 IP / GeoIP JSON API。
+IPX.EE 提供公网 IPv4 / IPv6 探测、IP 或域名查询、ASN / ISP / GeoIP 信息、网络类型识别以及多语言 JSON API。
 
-旧 PHP 实现仍保留在仓库中用于参考和回滚，但新首页已经迁移到 React / TanStack Start。
+当前网站由 TanStack Start 服务端渲染应用和 Go API 服务组成。旧 PHP 实现仍保留在仓库中，仅用于历史参考与紧急回滚。
 
 ---
 
 ## 技术栈
 
-- 前端：TanStack Start、TanStack Router、React、TypeScript、Vite
-- UI：Base UI 无样式组件 + 自定义 CSS
-- 图标：lucide-react
-- 后端：Go `net/http`
-- GeoIP：ip-api.com Pro / ip-api.com，服务端缓存
-- 部署入口：Nginx 反向代理到前端服务与 Go API 服务
+- 应用框架：TanStack Start 1.121、TanStack Router、React 19
+- 开发与构建：TypeScript 7、Vite 8、Node.js
+- UI：Liquid Glass OSS WebGL 材质、Base UI、Lucide、自定义 CSS
+- 地图：Leaflet + Google 地图瓦片
+- API：Go 1.25 标准库 `net/http`
+- GeoIP：ip-api Pro、磁盘 JSON 缓存、可配置 TTL
+- 生产环境：Caddy、systemd、Node SSR 服务、Go API 服务
+
+## 架构
+
+- `ipx.ee`：浏览器访问 React SSR 页面；命令行访问返回当前公网 IP。
+- `api.ipx.ee`：公开 GeoIP JSON API。
+- `v4.ipx.ee`：仅通过 IPv4 提供纯文本地址。
+- `v6.ipx.ee`：仅通过 IPv6 提供纯文本地址。
+- 前端 `/api/*`：由 TanStack Start 中间件代理到本机 Go 服务。
 
 ---
 
 ## 本地开发
 
 ```bash
-# 安装前端依赖
 npm install
 
-# 启动 Go API
+# 终端 1：Go API
 cd go-backend
 PORT=18080 PROJECT_ROOT=$(pwd)/.. go run main.go
 
-# 另开终端启动 TanStack Start
+# 终端 2：前端
 npm run dev
 ```
 
-开发环境中，TanStack Start 会通过 `src/start.ts` 中间件把 `/api/*` 代理到 Go 后端（默认 `http://127.0.0.1:18080`）。**Go 后端必须先启动**，否则 API 会返回 503。
+TanStack Start 默认把 `/api/*` 代理到 `http://127.0.0.1:18080`。可通过 `API_PROXY_TARGET` 覆盖目标地址。
+
+复制 `.env.example` 并按环境设置：
+
+- `IP_API_KEY`：ip-api Pro 密钥，必须通过环境变量提供。
+- `GEOIP_CACHE_DIR`、`GEOIP_CACHE_TTL`：缓存目录和有效期。
+- `VITE_PUBLIC_API_ORIGIN`：API 构建器展示的公开地址。
+- `SITE_HOST`、`API_HOST`、`V4_HOST`、`V6_HOST`：服务域名。
+- `PORT`、`PROJECT_ROOT`：Go 服务监听端口和项目目录。
 
 ---
 
 ## API
 
-| 路由 | 说明 |
-| --- | --- |
-| `/api/health` | 健康检查 |
-| `/api/ip` | 返回当前访问者 GeoIP JSON |
-| `/api/lookup/{ip-or-domain}` | 返回指定 IP 或域名 GeoIP JSON |
-| `/api/raw/{ip-or-domain}` | 返回标准化结果并包含 ip-api 原始 JSON |
-| `/api/fields` | 返回可用字段、默认字段和语言列表 |
-| `https://api.ipx.ee/ip` | 线上 API 域名查询当前访问者 |
-| `https://api.ipx.ee/{ip-or-domain}` | 线上 API 域名查询指定目标 |
+- `GET /api/health`：健康检查。
+- `GET /api/ip`：当前访问者的 GeoIP JSON。
+- `GET /api/lookup/{ip-or-domain}`：查询指定 IP 或域名。
+- `GET /api/raw/{ip-or-domain}`：标准化结果与原始上游 JSON。
+- `GET /api/fields`：可用字段、默认字段和语言列表。
+- `GET https://api.ipx.ee/ip`：通过公开 API 查询当前访问者。
+- `GET https://api.ipx.ee/{ip-or-domain}`：通过公开 API 查询目标。
 
 支持的查询参数：
 
-- `fields`：ip-api 字段列表，例如 `status,message,query,country,city,isp,as`
+- `fields`：字段 bitmask 或字段列表，例如 `8908315`
 - `lang`：返回语言，默认 `en`，支持 `en`、`de`、`es`、`pt-BR`、`fr`、`ja`、`zh-CN`、`ru`
-- `raw=1`：在响应中包含 ip-api 原始 JSON
-
-首页和前端 `/api` 页面都提供国旗语言入口。用户选择语言后，前端会把对应 `lang` 参数传给后端，GeoIP 输出会按该语言返回。
+- `raw=1`：在响应中包含原始上游 JSON
 
 ---
 
-## 验证
+## 构建与验证
 
 ```bash
 npm run typecheck
 npm run build
 cd go-backend && go test ./...
+```
+
+生产前端由 `server.mjs` 启动，默认监听 `127.0.0.1:3012`：
+
+```bash
+npm run build
+npm start
 ```
 
 ---

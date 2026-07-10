@@ -1,56 +1,23 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { Check, Clipboard, Network } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { Check, Clipboard } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { BrandLogo } from '../components/brand-mark'
 import { LanguageMenu } from '../components/language-menu'
 import { GlassPanel } from '../components/glass'
+import { ThemeToggle } from '../components/theme-toggle'
+import { TopbarIconLink } from '../components/topbar-icon-link'
+import {
+  apiFieldNames,
+  buildPublicApiURL,
+  commonApiFieldNames,
+  defaultFieldsBitmask,
+  encodeFieldsBitmask,
+} from '../lib/api-fields'
 import { defaultLanguage, languagePathByCode, type LanguageCode } from '../lib/languages'
+import { t } from '../lib/ui-messages'
 
-const apiFields = [
-  'status',
-  'message',
-  'continent',
-  'continentCode',
-  'country',
-  'countryCode',
-  'region',
-  'regionName',
-  'city',
-  'district',
-  'zip',
-  'lat',
-  'lon',
-  'timezone',
-  'offset',
-  'currency',
-  'isp',
-  'org',
-  'as',
-  'asname',
-  'reverse',
-  'mobile',
-  'proxy',
-  'hosting',
-  'query',
-]
-
-const commonFields = [
-  'status',
-  'message',
-  'query',
-  'country',
-  'countryCode',
-  'regionName',
-  'city',
-  'isp',
-  'org',
-  'as',
-  'asname',
-  'mobile',
-  'proxy',
-  'hosting',
-]
-
-const publicBaseURL = 'https://ipx.ee'
+const allFields = [...apiFieldNames]
+const commonFields = [...commonApiFieldNames]
 
 export const Route = createFileRoute('/api')({
   component: () => <APIPage initialLang={defaultLanguage} />,
@@ -66,18 +33,24 @@ export function APIPage({ initialLang = defaultLanguage }: APIPageProps) {
   const [raw, setRaw] = useState(false)
   const [fields, setFields] = useState<string[]>(commonFields)
   const [copied, setCopied] = useState(false)
+  const ui = t(lang)
 
-  const endpoint = useMemo(() => {
-    const path = target.trim()
-      ? `/api/lookup/${encodeURIComponent(target.trim())}`
-      : '/api/ip'
-    const params = new URLSearchParams({
-      fields: fields.join(','),
-      lang,
-    })
-    if (raw) params.set('raw', '1')
-    return `${publicBaseURL}${path}?${params.toString()}`
-  }, [fields, lang, raw, target])
+  useEffect(() => {
+    document.documentElement.lang = lang === 'zh-CN' ? 'zh-CN' : lang === 'pt-BR' ? 'pt-BR' : lang
+  }, [lang])
+
+  const fieldsCode = useMemo(() => encodeFieldsBitmask(fields), [fields])
+
+  const endpoint = useMemo(
+    () =>
+      buildPublicApiURL({
+        target,
+        fields,
+        lang,
+        raw,
+      }),
+    [fields, lang, raw, target],
+  )
 
   async function copyEndpoint() {
     await navigator.clipboard.writeText(endpoint)
@@ -97,36 +70,39 @@ export function APIPage({ initialLang = defaultLanguage }: APIPageProps) {
     <main className="page">
       <header className="topbar">
         <a className="brand" href="/">
-          <span className="brand-mark">
-            <Network size={18} aria-hidden="true" />
-          </span>
-          <span>IPX.EE</span>
+          <BrandLogo />
         </a>
         <div className="topbar-actions">
           <LanguageMenu
             lang={lang}
             onChange={setLang}
-            label="API response language"
+            label={ui.apiLangLabel}
             section="api"
           />
-          <a className="glass-chrome api-link" href={languagePathByCode(lang, 'home')}>
-            Lookup
-          </a>
+          <TopbarIconLink
+            href={languagePathByCode(lang, 'home')}
+            label={ui.lookupNav}
+            icon="lookup"
+          />
+          <ThemeToggle
+            labelLight={ui.themeToLight}
+            labelDark={ui.themeToDark}
+          />
         </div>
       </header>
 
       <GlassPanel className="hero">
-        <div className="eyebrow">API Builder</div>
-        <h1>Customize API</h1>
-        <p>Choose the target, response language, and fields to generate a custom IPX.EE API URL.</p>
+        <div className="eyebrow">{ui.apiEyebrow}</div>
+        <h1>{ui.apiTitle}</h1>
+        <p>{ui.apiDescription}</p>
 
         <div className="api-builder">
           <label>
-            Target
+            {ui.target}
             <input
               value={target}
               onChange={(event) => setTarget(event.target.value)}
-              placeholder="Leave empty to query current visitor IP"
+              placeholder={ui.targetPlaceholder}
             />
           </label>
           <label className="check-option">
@@ -135,17 +111,21 @@ export function APIPage({ initialLang = defaultLanguage }: APIPageProps) {
               checked={raw}
               onChange={(event) => setRaw(event.target.checked)}
             />
-            Include ip-api raw JSON
+            {ui.includeRaw}
           </label>
         </div>
-
       </GlassPanel>
 
       <GlassPanel className="result-card">
         <div className="result-head">
           <div>
-            <span className="result-label">Generated endpoint</span>
+            <span className="result-label">{ui.generatedEndpoint}</span>
             <code className="endpoint-title">{endpoint}</code>
+            <div className="fields-code">
+              {fieldsCode === defaultFieldsBitmask
+                ? 'fields=default'
+                : `fields=${fieldsCode || 0}`}
+            </div>
           </div>
           <button className="copy-button" type="button" onClick={copyEndpoint}>
             {copied ? <Check size={17} /> : <Clipboard size={17} />}
@@ -154,25 +134,25 @@ export function APIPage({ initialLang = defaultLanguage }: APIPageProps) {
 
         <div className="field-actions">
           <button type="button" onClick={() => setFields(commonFields)}>
-            Common
+            {ui.common}
           </button>
-          <button type="button" onClick={() => setFields(apiFields)}>
-            All fields
+          <button type="button" onClick={() => setFields(allFields)}>
+            {ui.allFields}
           </button>
           <button type="button" onClick={() => setFields([])}>
-            Clear
+            {ui.clear}
           </button>
         </div>
 
         <div className="field-picker">
-          {apiFields.map((field) => (
+          {allFields.map((field) => (
             <label key={field}>
               <input
                 type="checkbox"
                 checked={fields.includes(field)}
                 onChange={() => toggleField(field)}
               />
-              {field}
+              <span className="field-picker-name">{field}</span>
             </label>
           ))}
         </div>

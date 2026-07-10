@@ -24,12 +24,12 @@ const (
 	defaultV6Host        = "v6.ipx.ee"
 	defaultPort          = "18080"
 	defaultIPAPIEndpoint = "https://pro.ip-api.com/json/"
-	defaultIPAPIKey      = "Yl1qHz5nPSptyfw"
-	defaultIPAPIFields   = "21180127"
+	defaultIPAPIKey      = ""
+	defaultIPAPIFields   = "21229083"
 	defaultIPAPILang     = "en"
 	defaultGeoHTTPTimout = 5
 	defaultGeoCacheTTL   = 86400
-	geoCacheSchema       = 7
+	geoCacheSchema       = 9
 )
 
 type app struct {
@@ -61,17 +61,10 @@ type geoCacheEntry struct {
 type geoPayload struct {
 	IP            string   `json:"ip"`
 	Lookup        string   `json:"lookup"`
-	Continent     string   `json:"continent,omitempty"`
-	ContinentCode string   `json:"continent_code,omitempty"`
-	ASN           string   `json:"asn,omitempty"`
-	ASName        string   `json:"as_name,omitempty"`
-	ISP           string   `json:"isp,omitempty"`
-	Org           string   `json:"org,omitempty"`
-	IsProxy       *bool    `json:"is_proxy,omitempty"`
-	IsHosting     *bool    `json:"is_hosting,omitempty"`
-	IsMobile      *bool    `json:"is_mobile,omitempty"`
 	Country       string   `json:"country,omitempty"`
 	CountryCode   string   `json:"country_code,omitempty"`
+	Continent     string   `json:"continent,omitempty"`
+	ContinentCode string   `json:"continent_code,omitempty"`
 	Region        string   `json:"region,omitempty"`
 	Province      string   `json:"province,omitempty"`
 	City          string   `json:"city,omitempty"`
@@ -82,7 +75,14 @@ type geoPayload struct {
 	Timezone      string   `json:"timezone,omitempty"`
 	Offset        *int     `json:"offset,omitempty"`
 	Currency      string   `json:"currency,omitempty"`
+	ISP           string   `json:"isp,omitempty"`
+	Org           string   `json:"org,omitempty"`
+	ASN           string   `json:"asn,omitempty"`
+	ASName        string   `json:"as_name,omitempty"`
 	Reverse       string   `json:"reverse,omitempty"`
+	IsMobile      *bool    `json:"is_mobile,omitempty"`
+	IsProxy       *bool    `json:"is_proxy,omitempty"`
+	IsHosting     *bool    `json:"is_hosting,omitempty"`
 	Flag          string   `json:"flag,omitempty"`
 }
 
@@ -90,9 +90,6 @@ type geoAPIPayload struct {
 	OK        bool           `json:"ok"`
 	Data      geoPayload     `json:"data"`
 	Raw       map[string]any `json:"raw,omitempty"`
-	Fields    string         `json:"fields"`
-	Lang      string         `json:"lang"`
-	Provider  string         `json:"provider"`
 	RateLimit *rateLimitInfo `json:"rate_limit,omitempty"`
 }
 
@@ -322,9 +319,17 @@ func (a *app) handleAPIHost(w http.ResponseWriter, r *http.Request) {
 			"routes": []string{
 				"/ip",
 				"/{ip-or-domain}",
+				"/fields",
 				"/health",
 			},
+			"example": "https://api.ipx.ee/8.8.8.8",
 		}, http.StatusOK)
+		return
+	case r.URL.Path == "/health":
+		jsonResponse(w, map[string]any{"ok": true}, http.StatusOK)
+		return
+	case r.URL.Path == "/fields":
+		jsonResponse(w, apiFields(), http.StatusOK)
 		return
 	case r.URL.Path == "/ip":
 		clientIP := getClientIP(r)
@@ -350,7 +355,7 @@ func (a *app) handleAPIHost(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path != "/":
 		query := strings.TrimPrefix(r.URL.Path, "/")
 		query = decodePathValue(query)
-		if query == "" {
+		if query == "" || query == "favicon.ico" {
 			http.NotFound(w, r)
 			return
 		}
@@ -426,15 +431,12 @@ func (a *app) respondGeoLookupWithOptions(w http.ResponseWriter, lookup, fallbac
 
 func localGeoPayload(ip string, opts lookupOptions) geoAPIPayload {
 	opts = normalizeLookupOptions(opts, defaultIPAPIFields, defaultIPAPILang)
-	localCountry := "Local network"
-	if opts.Lang == "zh-CN" {
-		localCountry = "本地网络"
-	}
+	localCountry, localISP, localOrg := localizedLocalNetwork(opts.Lang)
 	data := geoPayload{
 		IP:      ip,
 		Lookup:  ip,
-		ISP:     "Local development",
-		Org:     "Loopback / private network",
+		ISP:     localISP,
+		Org:     localOrg,
 		Country: localCountry,
 	}
 	raw := map[string]any{
@@ -445,11 +447,8 @@ func localGeoPayload(ip string, opts lookupOptions) geoAPIPayload {
 		"org":     data.Org,
 	}
 	payload := geoAPIPayload{
-		OK:       true,
-		Data:     data,
-		Fields:   opts.Fields,
-		Lang:     opts.Lang,
-		Provider: "local",
+		OK:   true,
+		Data: data,
 	}
 	if opts.Raw {
 		payload.Raw = raw
@@ -512,9 +511,6 @@ func (g *geoIPClient) Lookup(query string, opts lookupOptions) (geoAPIPayload, i
 	data := geoAPIPayload{
 		OK:        true,
 		Data:      mapGeoPayload(query, payload),
-		Fields:    opts.Fields,
-		Lang:      opts.Lang,
-		Provider:  "ip-api.com",
 		RateLimit: rateLimitFromHeaders(resp.Header),
 	}
 	if opts.Raw {
@@ -529,9 +525,72 @@ func (g *geoIPClient) buildURL(query string, opts lookupOptions) string {
 	if g.apiKey != "" {
 		values.Set("key", g.apiKey)
 	}
-	values.Set("fields", opts.Fields)
+	values.Set("fields", fieldsForUpstream(opts.Fields))
 	values.Set("lang", opts.Lang)
 	return g.endpoint + url.PathEscape(query) + "?" + values.Encode()
+}
+
+// fieldsForUpstream prefers named fields so Pro API bit quirks cannot drop flags like hosting.
+func fieldsForUpstream(fields string) string {
+	fields = strings.TrimSpace(fields)
+	if fields == "" {
+		return strings.Join(commonIPAPIFieldNames(), ",")
+	}
+	if mask, err := strconv.ParseUint(fields, 10, 64); err == nil {
+		names := decodeFieldsBitmask(mask)
+		if len(names) > 0 {
+			return strings.Join(names, ",")
+		}
+	}
+	return fields
+}
+
+func commonIPAPIFieldNames() []string {
+	return []string{
+		"status", "message", "query", "country", "countryCode", "regionName", "city",
+		"isp", "org", "as", "asname", "mobile", "proxy", "hosting",
+	}
+}
+
+func decodeFieldsBitmask(mask uint64) []string {
+	type fieldBit struct {
+		name string
+		bit  uint64
+	}
+	order := []fieldBit{
+		{"status", 16384},
+		{"message", 32768},
+		{"continent", 1048576},
+		{"continentCode", 2097152},
+		{"country", 1},
+		{"countryCode", 2},
+		{"region", 4},
+		{"regionName", 8},
+		{"city", 16},
+		{"district", 524288},
+		{"zip", 32},
+		{"lat", 64},
+		{"lon", 128},
+		{"timezone", 256},
+		{"offset", 33554432},
+		{"currency", 8388608},
+		{"isp", 512},
+		{"org", 1024},
+		{"as", 2048},
+		{"asname", 4194304},
+		{"reverse", 4096},
+		{"mobile", 65536},
+		{"proxy", 131072},
+		{"hosting", 16777216},
+		{"query", 8192},
+	}
+	names := make([]string, 0, len(order))
+	for _, item := range order {
+		if mask&item.bit != 0 {
+			names = append(names, item.name)
+		}
+	}
+	return names
 }
 
 func (g *geoIPClient) cachePath(query string, opts lookupOptions) string {
@@ -670,6 +729,28 @@ func sanitizeLang(lang, fallback string) string {
 	}
 }
 
+// localizedLocalNetwork returns localized labels for loopback / private replies.
+func localizedLocalNetwork(lang string) (country, isp, org string) {
+	switch lang {
+	case "zh-CN":
+		return "本地网络", "本地开发", "回环 / 私有网络"
+	case "ja":
+		return "ローカルネットワーク", "ローカル開発", "ループバック / プライベートネットワーク"
+	case "de":
+		return "Lokales Netzwerk", "Lokale Entwicklung", "Loopback / privates Netzwerk"
+	case "fr":
+		return "Réseau local", "Développement local", "Loopback / réseau privé"
+	case "es":
+		return "Red local", "Desarrollo local", "Loopback / red privada"
+	case "pt-BR":
+		return "Rede local", "Desenvolvimento local", "Loopback / rede privada"
+	case "ru":
+		return "Локальная сеть", "Локальная разработка", "Loopback / частная сеть"
+	default:
+		return "Local network", "Local development", "Loopback / private network"
+	}
+}
+
 func rateLimitFromHeaders(header http.Header) *rateLimitInfo {
 	rl := toHeaderIntPtr(header.Get("X-Rl"))
 	ttl := toHeaderIntPtr(header.Get("X-Ttl"))
@@ -703,37 +784,38 @@ func defaultIPAPIFieldNames() []string {
 func apiFields() map[string]any {
 	type field struct {
 		Name        string `json:"name"`
+		Bit         int    `json:"bit"`
 		OutputKey   string `json:"output_key,omitempty"`
 		Description string `json:"description"`
 		Type        string `json:"type"`
 	}
 
 	fields := []field{
-		{"status", "", "success or fail", "string"},
-		{"message", "", "failure reason such as private range, reserved range, or invalid query", "string"},
-		{"continent", "continent", "Continent name", "string"},
-		{"continentCode", "continent_code", "Two-letter continent code", "string"},
-		{"country", "country", "Country name", "string"},
-		{"countryCode", "country_code", "Two-letter country code", "string"},
-		{"region", "region", "Region/state short code", "string"},
-		{"regionName", "province", "Region/state name", "string"},
-		{"city", "city", "City name", "string"},
-		{"district", "district", "District or subdivision", "string"},
-		{"zip", "zip", "Zip or postal code", "string"},
-		{"lat", "latitude", "Latitude", "float"},
-		{"lon", "longitude", "Longitude", "float"},
-		{"timezone", "timezone", "Timezone identifier", "string"},
-		{"offset", "offset", "Timezone UTC DST offset in seconds", "int"},
-		{"currency", "currency", "National currency code", "string"},
-		{"isp", "isp", "ISP name", "string"},
-		{"org", "org", "Organization name", "string"},
-		{"as", "asn", "AS number and organization", "string"},
-		{"asname", "as_name", "AS name", "string"},
-		{"reverse", "reverse", "Reverse DNS hostname", "string"},
-		{"mobile", "is_mobile", "Mobile network flag", "bool"},
-		{"proxy", "is_proxy", "Proxy, VPN, or Tor flag", "bool"},
-		{"hosting", "is_hosting", "Hosting, colocated, or data center flag", "bool"},
-		{"query", "ip", "IP used for the query", "string"},
+		{"status", 16384, "", "success or fail", "string"},
+		{"message", 32768, "", "failure reason such as private range, reserved range, or invalid query", "string"},
+		{"continent", 1048576, "continent", "Continent name", "string"},
+		{"continentCode", 2097152, "continent_code", "Two-letter continent code", "string"},
+		{"country", 1, "country", "Country name", "string"},
+		{"countryCode", 2, "country_code", "Two-letter country code", "string"},
+		{"region", 4, "region", "Region/state short code", "string"},
+		{"regionName", 8, "province", "Region/state name", "string"},
+		{"city", 16, "city", "City name", "string"},
+		{"district", 524288, "district", "District or subdivision", "string"},
+		{"zip", 32, "zip", "Zip or postal code", "string"},
+		{"lat", 64, "latitude", "Latitude", "float"},
+		{"lon", 128, "longitude", "Longitude", "float"},
+		{"timezone", 256, "timezone", "Timezone identifier", "string"},
+		{"offset", 33554432, "offset", "Timezone UTC DST offset in seconds", "int"},
+		{"currency", 8388608, "currency", "National currency code", "string"},
+		{"isp", 512, "isp", "ISP name", "string"},
+		{"org", 1024, "org", "Organization name", "string"},
+		{"as", 2048, "asn", "AS number and organization", "string"},
+		{"asname", 4194304, "as_name", "AS name", "string"},
+		{"reverse", 4096, "reverse", "Reverse DNS hostname", "string"},
+		{"mobile", 65536, "is_mobile", "Mobile network flag", "bool"},
+		{"proxy", 131072, "is_proxy", "Proxy, VPN, or Tor flag", "bool"},
+		{"hosting", 16777216, "is_hosting", "Hosting, colocated, or data center flag", "bool"},
+		{"query", 8192, "ip", "IP used for the query", "string"},
 	}
 
 	return map[string]any{
@@ -741,6 +823,15 @@ func apiFields() map[string]any {
 		"default":       defaultIPAPIFields,
 		"default_names": defaultIPAPIFieldNames(),
 		"languages":     []string{"en", "de", "es", "pt-BR", "fr", "ja", "zh-CN", "ru"},
+		"hosts": map[string]string{
+			"site": "https://ipx.ee",
+			"api":  "https://api.ipx.ee",
+		},
+		"examples": []string{
+			"https://api.ipx.ee/8.8.8.8",
+			"https://api.ipx.ee/ip",
+			"https://api.ipx.ee/8.8.8.8?fields=21229083&lang=zh-CN",
+		},
 	}
 }
 
@@ -878,12 +969,12 @@ func preferredASName(rawASName, org, isp string) string {
 	isp = normalizeEntityName(isp)
 
 	switch {
-	case org != "":
-		return org
-	case isp != "":
-		return isp
 	case rawASName != "":
 		return rawASName
+	case isp != "":
+		return isp
+	case org != "":
+		return org
 	default:
 		return ""
 	}

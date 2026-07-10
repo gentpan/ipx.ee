@@ -1,3 +1,4 @@
+import type { MouseEvent } from 'react'
 import { languagePath, languages, type LanguageCode } from '../lib/languages'
 
 type LanguageMenuProps = {
@@ -15,9 +16,22 @@ export function LanguageMenu({
 }: LanguageMenuProps) {
   const activeLanguage = languages.find((language) => language.code === lang) ?? languages[0]
 
-  function selectLanguage(nextLang: LanguageCode, target: EventTarget & HTMLAnchorElement) {
+  function selectLanguage(
+    nextLang: LanguageCode,
+    event: MouseEvent<HTMLAnchorElement>,
+  ) {
+    // Keep SPA state (lookup query / results) and refetch with new lang.
+    // href remains for open-in-new-tab / crawlers.
+    event.preventDefault()
     onChange(nextLang)
-    target.closest('details')?.removeAttribute('open')
+    const nextPath = languagePath(
+      languages.find((language) => language.code === nextLang) ?? languages[0],
+      section,
+    )
+    if (window.location.pathname !== nextPath) {
+      window.history.replaceState(window.history.state, '', nextPath)
+    }
+    event.currentTarget.closest('details')?.removeAttribute('open')
   }
 
   return (
@@ -34,7 +48,7 @@ export function LanguageMenu({
             href={languagePath(language, section)}
             role="menuitemradio"
             aria-checked={language.code === lang}
-            onClick={(event) => selectLanguage(language.code, event.currentTarget)}
+            onClick={(event) => selectLanguage(language.code, event)}
           >
             <img src={`https://flagcdn.com/${language.flag}.svg`} alt="" />
             <span>{language.label}</span>

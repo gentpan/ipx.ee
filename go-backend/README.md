@@ -13,33 +13,34 @@
   - `GET /ip` 返回当前访问者的 GeoIP JSON
   - `GET /{ip-or-domain}` 返回指定 IP 或域名的 GeoIP JSON
 
-## 内置默认值
+## 配置
 
-代码里已经直接写入以下默认值，部署时不配环境变量也能跑：
+以下配置带有内置默认值：
 
 - `SITE_HOST=ipx.ee`
 - `API_HOST=api.ipx.ee`
 - `V4_HOST=v4.ipx.ee`
 - `V6_HOST=v6.ipx.ee`
 - `IP_API_ENDPOINT=https://pro.ip-api.com/json/`
-- `IP_API_FIELDS=21180127`
-- `IP_API_LANG=zh-CN`
+- `IP_API_FIELDS=21229083`
+- `IP_API_LANG=en`
 
-仍然支持通过环境变量覆盖。
+`IP_API_KEY` 不提供默认值，必须通过环境变量注入，禁止提交到仓库。
 
 ## 构建
 
 ```bash
-cd /Users/gentpan/projects/ipx.ee/go-backend
+cd go-backend
 go build -o backend .
 ```
 
 ## 运行
 
 ```bash
-cd /Users/gentpan/projects/ipx.ee/go-backend
+cd go-backend
 PORT=18080 \
-PROJECT_ROOT=/Users/gentpan/projects/ipx.ee \
+PROJECT_ROOT="$(pwd)/.." \
+IP_API_KEY="replace-with-your-ip-api-key" \
 ./backend
 ```
 

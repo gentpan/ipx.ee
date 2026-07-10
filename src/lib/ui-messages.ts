@@ -1,0 +1,666 @@
+import type { LanguageCode } from './languages'
+
+export type UiMessages = {
+  language: string
+  api: string
+  lookupNav: string
+  themeToLight: string
+  themeToDark: string
+  eyebrow: string
+  title: string
+  description: string
+  queryLabel: string
+  placeholder: string
+  lookup: string
+  queryOptions: string
+  fields: string
+  fieldsCommon: string
+  fieldsFull: string
+  rawJson: string
+  yourPublicIp: string
+  lookupResult: string
+  lookingUp: string
+  lookupFailed: string
+  detecting: string
+  locating: string
+  unknownLocation: string
+  waitingResult: string
+  readyForLookup: string
+  copyIp: string
+  yourPublicIpv4: string
+  yourPublicIpv6: string
+  ipv6Unsupported: string
+  badgeMobile: string
+  badgeProxy: string
+  badgeHosting: string
+  badgeYes: string
+  badgeNo: string
+  badgeMobileHint: string
+  badgeProxyHint: string
+  badgeHostingHint: string
+  apiEyebrow: string
+  apiTitle: string
+  apiDescription: string
+  apiLangLabel: string
+  target: string
+  targetPlaceholder: string
+  includeRaw: string
+  generatedEndpoint: string
+  common: string
+  allFields: string
+  clear: string
+  close: string
+  mapPreview: string
+}
+
+const en: UiMessages = {
+  language: 'Language',
+  api: 'API',
+  lookupNav: 'Lookup',
+  themeToLight: 'Switch to light mode',
+  themeToDark: 'Switch to dark mode',
+  eyebrow: 'IPv4 / IPv6 / GeoIP',
+  title: 'IP Address Lookup',
+  description: 'Look up public IP location, ISP, ASN, and network signals.',
+  queryLabel: 'Look up IP or domain',
+  placeholder: '8.8.8.8 or example.com',
+  lookup: 'Lookup',
+  queryOptions: 'Query options',
+  fields: 'Fields',
+  fieldsCommon: 'Common',
+  fieldsFull: 'Full',
+  rawJson: 'Raw JSON',
+  yourPublicIp: 'Your public IP',
+  lookupResult: 'Lookup result',
+  lookingUp: 'Looking up',
+  lookupFailed: 'Lookup failed',
+  detecting: 'Detecting...',
+  locating: 'Detecting',
+  unknownLocation: 'Unknown location',
+  waitingResult: 'Waiting for result',
+  readyForLookup: 'Ready for lookup.',
+  copyIp: 'Copy IP',
+  yourPublicIpv4: 'Your public IPv4',
+  yourPublicIpv6: 'Your public IPv6',
+  ipv6Unsupported: 'IPv6 is not supported on this network',
+  badgeMobile: 'Mobile',
+  badgeProxy: 'Proxy',
+  badgeHosting: 'Hosting',
+  badgeYes: 'Yes',
+  badgeNo: 'No',
+  badgeMobileHint: 'Mobile network',
+  badgeProxyHint: 'Proxy / VPN',
+  badgeHostingHint: 'Hosting / datacenter',
+  apiEyebrow: 'API Builder',
+  apiTitle: 'Customize API',
+  apiDescription:
+    'Choose the target, response language, and fields to generate a custom IPX.EE API URL.',
+  apiLangLabel: 'API response language',
+  target: 'Target',
+  targetPlaceholder: 'Leave empty to query current visitor IP',
+  includeRaw: 'Include raw upstream JSON',
+  generatedEndpoint: 'Generated endpoint',
+  common: 'Common',
+  allFields: 'All fields',
+  clear: 'Clear',
+  close: 'Close',
+  mapPreview: 'Map',
+}
+
+const zhCN: UiMessages = {
+  language: '语言',
+  api: 'API',
+  lookupNav: '查询',
+  themeToLight: '切换到浅色模式',
+  themeToDark: '切换到深色模式',
+  eyebrow: 'IPv4 / IPv6 / GeoIP',
+  title: 'IP 地址查询',
+  description: '查询公网 IP 的位置、运营商、ASN 与网络信号。',
+  queryLabel: '查询 IP 或域名',
+  placeholder: '8.8.8.8 或 example.com',
+  lookup: '查询',
+  queryOptions: '查询选项',
+  fields: '字段',
+  fieldsCommon: '常用',
+  fieldsFull: '全部',
+  rawJson: '原始 JSON',
+  yourPublicIp: '你的公网出口',
+  lookupResult: '查询结果',
+  lookingUp: '正在查询',
+  lookupFailed: '识别失败',
+  detecting: '正在识别...',
+  locating: '定位中',
+  unknownLocation: '未知位置',
+  waitingResult: '等待结果',
+  readyForLookup: '准备查询。',
+  copyIp: '复制 IP',
+  yourPublicIpv4: '你的公网 IPv4',
+  yourPublicIpv6: '你的公网 IPv6',
+  ipv6Unsupported: '当前网络不支持 IPv6',
+  badgeMobile: '移动',
+  badgeProxy: '代理',
+  badgeHosting: '机房',
+  badgeYes: '是',
+  badgeNo: '否',
+  badgeMobileHint: '移动网络',
+  badgeProxyHint: '代理 / VPN',
+  badgeHostingHint: '机房 / 托管',
+  apiEyebrow: 'API 构建器',
+  apiTitle: '自定义 API',
+  apiDescription: '选择目标、响应语言与字段，生成自定义 IPX.EE API 地址。',
+  apiLangLabel: 'API 响应语言',
+  target: '目标',
+  targetPlaceholder: '留空则查询当前访客 IP',
+  includeRaw: '包含原始上游 JSON',
+  generatedEndpoint: '生成的接口',
+  common: '常用',
+  allFields: '全部字段',
+  clear: '清空',
+  close: '关闭',
+  mapPreview: '地图',
+}
+
+const ja: UiMessages = {
+  language: '言語',
+  api: 'API',
+  lookupNav: '検索',
+  themeToLight: 'ライトモードに切替',
+  themeToDark: 'ダークモードに切替',
+  eyebrow: 'IPv4 / IPv6 / GeoIP',
+  title: 'IP アドレス検索',
+  description: '公開 IP の位置、ISP、ASN、ネットワーク情報を検索します。',
+  queryLabel: 'IP またはドメインを検索',
+  placeholder: '8.8.8.8 または example.com',
+  lookup: '検索',
+  queryOptions: '検索オプション',
+  fields: 'フィールド',
+  fieldsCommon: '一般',
+  fieldsFull: 'すべて',
+  rawJson: '生 JSON',
+  yourPublicIp: 'あなたの公開 IP',
+  lookupResult: '検索結果',
+  lookingUp: '検索中',
+  lookupFailed: '検索失敗',
+  detecting: '検出中...',
+  locating: '検出中',
+  unknownLocation: '不明な場所',
+  waitingResult: '結果待ち',
+  readyForLookup: '検索の準備完了。',
+  copyIp: 'IP をコピー',
+  yourPublicIpv4: 'あなたの公開 IPv4',
+  yourPublicIpv6: 'あなたの公開 IPv6',
+  ipv6Unsupported: 'このネットワークは IPv6 に対応していません',
+  badgeMobile: 'モバイル',
+  badgeProxy: 'プロキシ',
+  badgeHosting: 'ホスティング',
+  badgeYes: 'Yes',
+  badgeNo: 'No',
+  badgeMobileHint: 'モバイル回線',
+  badgeProxyHint: 'プロキシ / VPN',
+  badgeHostingHint: 'ホスティング / データセンター',
+  apiEyebrow: 'API ビルダー',
+  apiTitle: 'API をカスタマイズ',
+  apiDescription: '対象、応答言語、フィールドを選んで IPX.EE API URL を生成します。',
+  apiLangLabel: 'API 応答言語',
+  target: '対象',
+  targetPlaceholder: '空欄で現在の訪問者 IP を照会',
+  includeRaw: '生の上流 JSON を含める',
+  generatedEndpoint: '生成されたエンドポイント',
+  common: '一般',
+  allFields: '全フィールド',
+  clear: 'クリア',
+  close: '閉じる',
+  mapPreview: '地図',
+}
+
+const de: UiMessages = {
+  language: 'Sprache',
+  api: 'API',
+  lookupNav: 'Suche',
+  themeToLight: 'Zum hellen Modus wechseln',
+  themeToDark: 'Zum dunklen Modus wechseln',
+  eyebrow: 'IPv4 / IPv6 / GeoIP',
+  title: 'IP-Adresssuche',
+  description: 'Öffentliche IP-Standort, ISP, ASN und Netzwerksignale nachschlagen.',
+  queryLabel: 'IP oder Domain suchen',
+  placeholder: '8.8.8.8 oder example.com',
+  lookup: 'Suchen',
+  queryOptions: 'Abfrageoptionen',
+  fields: 'Felder',
+  fieldsCommon: 'Üblich',
+  fieldsFull: 'Vollständig',
+  rawJson: 'Rohes JSON',
+  yourPublicIp: 'Ihre öffentliche IP',
+  lookupResult: 'Suchergebnis',
+  lookingUp: 'Suche läuft',
+  lookupFailed: 'Suche fehlgeschlagen',
+  detecting: 'Erkennung...',
+  locating: 'Erkennung',
+  unknownLocation: 'Unbekannter Ort',
+  waitingResult: 'Warte auf Ergebnis',
+  readyForLookup: 'Bereit zur Suche.',
+  copyIp: 'IP kopieren',
+  yourPublicIpv4: 'Ihre öffentliche IPv4',
+  yourPublicIpv6: 'Ihre öffentliche IPv6',
+  ipv6Unsupported: 'IPv6 wird in diesem Netzwerk nicht unterstützt',
+  badgeMobile: 'Mobil',
+  badgeProxy: 'Proxy',
+  badgeHosting: 'Hosting',
+  badgeYes: 'Yes',
+  badgeNo: 'No',
+  badgeMobileHint: 'Mobilfunknetz',
+  badgeProxyHint: 'Proxy / VPN',
+  badgeHostingHint: 'Hosting / Rechenzentrum',
+  apiEyebrow: 'API-Builder',
+  apiTitle: 'API anpassen',
+  apiDescription:
+    'Ziel, Antwortsprache und Felder wählen, um eine IPX.EE-API-URL zu erzeugen.',
+  apiLangLabel: 'API-Antwortsprache',
+  target: 'Ziel',
+  targetPlaceholder: 'Leer lassen für die IP des aktuellen Besuchers',
+  includeRaw: 'Rohes Upstream-JSON einbeziehen',
+  generatedEndpoint: 'Erzeugter Endpunkt',
+  common: 'Üblich',
+  allFields: 'Alle Felder',
+  clear: 'Leeren',
+  close: 'Schließen',
+  mapPreview: 'Karte',
+}
+
+const fr: UiMessages = {
+  language: 'Langue',
+  api: 'API',
+  lookupNav: 'Recherche',
+  themeToLight: 'Passer en mode clair',
+  themeToDark: 'Passer en mode sombre',
+  eyebrow: 'IPv4 / IPv6 / GeoIP',
+  title: 'Recherche d’adresse IP',
+  description:
+    'Recherchez la localisation, le FAI, l’ASN et les signaux réseau d’une IP publique.',
+  queryLabel: 'Rechercher une IP ou un domaine',
+  placeholder: '8.8.8.8 ou example.com',
+  lookup: 'Rechercher',
+  queryOptions: 'Options de requête',
+  fields: 'Champs',
+  fieldsCommon: 'Courants',
+  fieldsFull: 'Complets',
+  rawJson: 'JSON brut',
+  yourPublicIp: 'Votre IP publique',
+  lookupResult: 'Résultat',
+  lookingUp: 'Recherche…',
+  lookupFailed: 'Échec de la recherche',
+  detecting: 'Détection…',
+  locating: 'Détection',
+  unknownLocation: 'Lieu inconnu',
+  waitingResult: 'En attente du résultat',
+  readyForLookup: 'Prêt pour la recherche.',
+  copyIp: 'Copier l’IP',
+  yourPublicIpv4: 'Votre IPv4 publique',
+  yourPublicIpv6: 'Votre IPv6 publique',
+  ipv6Unsupported: 'IPv6 n’est pas pris en charge sur ce réseau',
+  badgeMobile: 'Mobile',
+  badgeProxy: 'Proxy',
+  badgeHosting: 'Hébergement',
+  badgeYes: 'Oui',
+  badgeNo: 'Non',
+  badgeMobileHint: 'Réseau mobile',
+  badgeProxyHint: 'Proxy / VPN',
+  badgeHostingHint: 'Hébergement / datacenter',
+  apiEyebrow: 'Générateur d’API',
+  apiTitle: 'Personnaliser l’API',
+  apiDescription:
+    'Choisissez la cible, la langue de réponse et les champs pour générer une URL API IPX.EE.',
+  apiLangLabel: 'Langue de réponse API',
+  target: 'Cible',
+  targetPlaceholder: 'Laisser vide pour l’IP du visiteur actuel',
+  includeRaw: 'Inclure le JSON brut amont',
+  generatedEndpoint: 'Point de terminaison généré',
+  common: 'Courants',
+  allFields: 'Tous les champs',
+  clear: 'Effacer',
+  close: 'Fermer',
+  mapPreview: 'Carte',
+}
+
+const es: UiMessages = {
+  language: 'Idioma',
+  api: 'API',
+  lookupNav: 'Consulta',
+  themeToLight: 'Cambiar a modo claro',
+  themeToDark: 'Cambiar a modo oscuro',
+  eyebrow: 'IPv4 / IPv6 / GeoIP',
+  title: 'Consulta de dirección IP',
+  description:
+    'Consulta la ubicación, ISP, ASN y señales de red de una IP pública.',
+  queryLabel: 'Consultar IP o dominio',
+  placeholder: '8.8.8.8 o example.com',
+  lookup: 'Consultar',
+  queryOptions: 'Opciones de consulta',
+  fields: 'Campos',
+  fieldsCommon: 'Comunes',
+  fieldsFull: 'Completos',
+  rawJson: 'JSON sin procesar',
+  yourPublicIp: 'Tu IP pública',
+  lookupResult: 'Resultado',
+  lookingUp: 'Consultando',
+  lookupFailed: 'Error en la consulta',
+  detecting: 'Detectando...',
+  locating: 'Detectando',
+  unknownLocation: 'Ubicación desconocida',
+  waitingResult: 'Esperando resultado',
+  readyForLookup: 'Listo para consultar.',
+  copyIp: 'Copiar IP',
+  yourPublicIpv4: 'Tu IPv4 pública',
+  yourPublicIpv6: 'Tu IPv6 pública',
+  ipv6Unsupported: 'IPv6 no es compatible en esta red',
+  badgeMobile: 'Móvil',
+  badgeProxy: 'Proxy',
+  badgeHosting: 'Hosting',
+  badgeYes: 'Sí',
+  badgeNo: 'No',
+  badgeMobileHint: 'Red móvil',
+  badgeProxyHint: 'Proxy / VPN',
+  badgeHostingHint: 'Hosting / centro de datos',
+  apiEyebrow: 'Constructor de API',
+  apiTitle: 'Personalizar API',
+  apiDescription:
+    'Elige el destino, el idioma de respuesta y los campos para generar una URL de API de IPX.EE.',
+  apiLangLabel: 'Idioma de respuesta de la API',
+  target: 'Destino',
+  targetPlaceholder: 'Déjalo vacío para consultar la IP del visitante actual',
+  includeRaw: 'Incluir JSON sin procesar del origen',
+  generatedEndpoint: 'Endpoint generado',
+  common: 'Comunes',
+  allFields: 'Todos los campos',
+  clear: 'Borrar',
+  close: 'Cerrar',
+  mapPreview: 'Mapa',
+}
+
+const ptBR: UiMessages = {
+  language: 'Idioma',
+  api: 'API',
+  lookupNav: 'Consulta',
+  themeToLight: 'Mudar para modo claro',
+  themeToDark: 'Mudar para modo escuro',
+  eyebrow: 'IPv4 / IPv6 / GeoIP',
+  title: 'Consulta de endereço IP',
+  description:
+    'Consulte localização, ISP, ASN e sinais de rede de um IP público.',
+  queryLabel: 'Consultar IP ou domínio',
+  placeholder: '8.8.8.8 ou example.com',
+  lookup: 'Consultar',
+  queryOptions: 'Opções de consulta',
+  fields: 'Campos',
+  fieldsCommon: 'Comuns',
+  fieldsFull: 'Completos',
+  rawJson: 'JSON bruto',
+  yourPublicIp: 'Seu IP público',
+  lookupResult: 'Resultado',
+  lookingUp: 'Consultando',
+  lookupFailed: 'Falha na consulta',
+  detecting: 'Detectando...',
+  locating: 'Detectando',
+  unknownLocation: 'Local desconhecido',
+  waitingResult: 'Aguardando resultado',
+  readyForLookup: 'Pronto para consultar.',
+  copyIp: 'Copiar IP',
+  yourPublicIpv4: 'Seu IPv4 público',
+  yourPublicIpv6: 'Seu IPv6 público',
+  ipv6Unsupported: 'IPv6 não é suportado nesta rede',
+  badgeMobile: 'Móvel',
+  badgeProxy: 'Proxy',
+  badgeHosting: 'Hosting',
+  badgeYes: 'Sim',
+  badgeNo: 'Não',
+  badgeMobileHint: 'Rede móvel',
+  badgeProxyHint: 'Proxy / VPN',
+  badgeHostingHint: 'Hosting / datacenter',
+  apiEyebrow: 'Construtor de API',
+  apiTitle: 'Personalizar API',
+  apiDescription:
+    'Escolha o alvo, o idioma da resposta e os campos para gerar uma URL da API IPX.EE.',
+  apiLangLabel: 'Idioma da resposta da API',
+  target: 'Alvo',
+  targetPlaceholder: 'Deixe vazio para consultar o IP do visitante atual',
+  includeRaw: 'Incluir JSON bruto do upstream',
+  generatedEndpoint: 'Endpoint gerado',
+  common: 'Comuns',
+  allFields: 'Todos os campos',
+  clear: 'Limpar',
+  close: 'Fechar',
+  mapPreview: 'Mapa',
+}
+
+const ru: UiMessages = {
+  language: 'Язык',
+  api: 'API',
+  lookupNav: 'Поиск',
+  themeToLight: 'Переключить на светлую тему',
+  themeToDark: 'Переключить на тёмную тему',
+  eyebrow: 'IPv4 / IPv6 / GeoIP',
+  title: 'Поиск IP-адреса',
+  description:
+    'Узнайте местоположение, провайдера, ASN и сетевые признаки публичного IP.',
+  queryLabel: 'Поиск IP или домена',
+  placeholder: '8.8.8.8 или example.com',
+  lookup: 'Найти',
+  queryOptions: 'Параметры запроса',
+  fields: 'Поля',
+  fieldsCommon: 'Основные',
+  fieldsFull: 'Все',
+  rawJson: 'Сырой JSON',
+  yourPublicIp: 'Ваш публичный IP',
+  lookupResult: 'Результат',
+  lookingUp: 'Поиск…',
+  lookupFailed: 'Ошибка поиска',
+  detecting: 'Определение…',
+  locating: 'Определение',
+  unknownLocation: 'Неизвестное место',
+  waitingResult: 'Ожидание результата',
+  readyForLookup: 'Готово к поиску.',
+  copyIp: 'Копировать IP',
+  yourPublicIpv4: 'Ваш публичный IPv4',
+  yourPublicIpv6: 'Ваш публичный IPv6',
+  ipv6Unsupported: 'IPv6 не поддерживается в этой сети',
+  badgeMobile: 'Мобильный',
+  badgeProxy: 'Прокси',
+  badgeHosting: 'Хостинг',
+  badgeYes: 'Да',
+  badgeNo: 'Нет',
+  badgeMobileHint: 'Мобильная сеть',
+  badgeProxyHint: 'Прокси / VPN',
+  badgeHostingHint: 'Хостинг / дата-центр',
+  apiEyebrow: 'Конструктор API',
+  apiTitle: 'Настроить API',
+  apiDescription:
+    'Выберите цель, язык ответа и поля, чтобы создать URL API IPX.EE.',
+  apiLangLabel: 'Язык ответа API',
+  target: 'Цель',
+  targetPlaceholder: 'Оставьте пустым для IP текущего посетителя',
+  includeRaw: 'Включить сырой upstream JSON',
+  generatedEndpoint: 'Сгенерированный endpoint',
+  common: 'Основные',
+  allFields: 'Все поля',
+  clear: 'Очистить',
+  close: 'Закрыть',
+  mapPreview: 'Карта',
+}
+
+export const uiMessages: Record<LanguageCode, UiMessages> = {
+  en,
+  'zh-CN': zhCN,
+  ja,
+  de,
+  fr,
+  es,
+  'pt-BR': ptBR,
+  ru,
+}
+
+export function t(lang: LanguageCode): UiMessages {
+  return uiMessages[lang] ?? uiMessages.en
+}
+
+export type FieldLabelKey =
+  | 'country'
+  | 'province'
+  | 'city'
+  | 'isp'
+  | 'asn'
+  | 'asName'
+  | 'asnOrg'
+  | 'org'
+  | 'enterprise'
+  | 'provider'
+  | 'coordinates'
+  | 'timezone'
+  | 'currency'
+  | 'reverse'
+
+const fieldLabels: Record<FieldLabelKey, Record<LanguageCode, string>> = {
+  country: {
+    en: 'Country / Region',
+    'zh-CN': '国家 / 地区',
+    ja: '国 / 地域',
+    de: 'Land / Region',
+    fr: 'Pays / Région',
+    es: 'País / Región',
+    'pt-BR': 'País / Região',
+    ru: 'Страна / Регион',
+  },
+  province: {
+    en: 'Region / State',
+    'zh-CN': '省份 / 州',
+    ja: '都道府県 / 州',
+    de: 'Region / Bundesland',
+    fr: 'Région / État',
+    es: 'Región / Estado',
+    'pt-BR': 'Região / Estado',
+    ru: 'Регион / Штат',
+  },
+  city: {
+    en: 'City',
+    'zh-CN': '城市',
+    ja: '市区町村',
+    de: 'Stadt',
+    fr: 'Ville',
+    es: 'Ciudad',
+    'pt-BR': 'Cidade',
+    ru: 'Город',
+  },
+  isp: {
+    en: 'ISP',
+    'zh-CN': '运营商',
+    ja: 'ISP',
+    de: 'ISP',
+    fr: 'FAI',
+    es: 'ISP',
+    'pt-BR': 'ISP',
+    ru: 'Провайдер',
+  },
+  asn: {
+    en: 'ASN',
+    'zh-CN': 'ASN',
+    ja: 'ASN',
+    de: 'ASN',
+    fr: 'ASN',
+    es: 'ASN',
+    'pt-BR': 'ASN',
+    ru: 'ASN',
+  },
+  asName: {
+    en: 'AS Name',
+    'zh-CN': 'AS 名称',
+    ja: 'AS 名',
+    de: 'AS-Name',
+    fr: 'Nom AS',
+    es: 'Nombre AS',
+    'pt-BR': 'Nome AS',
+    ru: 'Имя AS',
+  },
+  asnOrg: {
+    en: 'ASN Org',
+    'zh-CN': '运营商',
+    ja: 'ASN Org',
+    de: 'ASN Org',
+    fr: 'ASN Org',
+    es: 'ASN Org',
+    'pt-BR': 'ASN Org',
+    ru: 'ASN Org',
+  },
+  org: {
+    en: 'Organization',
+    'zh-CN': '组织',
+    ja: '組織',
+    de: 'Organisation',
+    fr: 'Organisation',
+    es: 'Organización',
+    'pt-BR': 'Organização',
+    ru: 'Организация',
+  },
+  enterprise: {
+    en: 'Enterprise',
+    'zh-CN': '企业信息',
+    ja: '企業情報',
+    de: 'Unternehmen',
+    fr: 'Entreprise',
+    es: 'Empresa',
+    'pt-BR': 'Empresa',
+    ru: 'Организация',
+  },
+  provider: {
+    en: 'ISP / Org',
+    'zh-CN': '运营商',
+    ja: 'ISP / 組織',
+    de: 'ISP / Org',
+    fr: 'FAI / Org',
+    es: 'ISP / Org',
+    'pt-BR': 'ISP / Org',
+    ru: 'Провайдер',
+  },
+  coordinates: {
+    en: 'Coordinates',
+    'zh-CN': '坐标',
+    ja: '座標',
+    de: 'Koordinaten',
+    fr: 'Coordonnées',
+    es: 'Coordenadas',
+    'pt-BR': 'Coordenadas',
+    ru: 'Координаты',
+  },
+  timezone: {
+    en: 'Timezone',
+    'zh-CN': '时区',
+    ja: 'タイムゾーン',
+    de: 'Zeitzone',
+    fr: 'Fuseau horaire',
+    es: 'Zona horaria',
+    'pt-BR': 'Fuso horário',
+    ru: 'Часовой пояс',
+  },
+  currency: {
+    en: 'Currency',
+    'zh-CN': '货币',
+    ja: '通貨',
+    de: 'Währung',
+    fr: 'Devise',
+    es: 'Moneda',
+    'pt-BR': 'Moeda',
+    ru: 'Валюта',
+  },
+  reverse: {
+    en: 'Reverse DNS',
+    'zh-CN': '反向 DNS',
+    ja: '逆引き DNS',
+    de: 'Reverse DNS',
+    fr: 'DNS inverse',
+    es: 'DNS inverso',
+    'pt-BR': 'DNS reverso',
+    ru: 'Обратный DNS',
+  },
+}
+
+export function fieldLabel(key: FieldLabelKey, lang: LanguageCode) {
+  return fieldLabels[key][lang] ?? fieldLabels[key].en
+}

@@ -1,6 +1,6 @@
 {
-  "name": "ip.bluecdn.com",
-  "short_name": "IP Lookup",
+  "name": "IPX.EE",
+  "short_name": "IPX.EE",
   "icons": [
     {
       "src": "/android-chrome-192x192.png",
@@ -13,8 +13,8 @@
       "type": "image/png"
     }
   ],
-  "theme_color": "#008235",
-  "background_color": "#ffffff",
+  "theme_color": "#2563eb",
+  "background_color": "#2563eb",
   "display": "standalone",
   "start_url": "/"
 }
