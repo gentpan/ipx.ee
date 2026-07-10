@@ -3,10 +3,10 @@
 .env.*
 !.env.example
 *.log
-*.xdb
 .gocache/
 release/
 go-backend/backend
+go-backend/go-backend
 node_modules/
 dist/
 data/geoip-cache/

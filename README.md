@@ -26,7 +26,7 @@
 
 IPX.EE 提供公网 IPv4 / IPv6 探测、IP 或域名查询、ASN / ISP / GeoIP 信息、网络类型识别以及多语言 JSON API。
 
-当前网站由 TanStack Start 服务端渲染应用和 Go API 服务组成。旧 PHP 实现仍保留在仓库中，仅用于历史参考与紧急回滚。
+当前项目由 TanStack Start 服务端渲染应用和 Go API 服务组成，不依赖 PHP。
 
 ---
 

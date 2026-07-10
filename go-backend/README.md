@@ -1,10 +1,10 @@
 # ipx.ee Go Backend
 
-这个后端现在只保留 4 个域名行为：
+Go 服务负责 IP 文本响应与 GeoIP JSON API。浏览器前端由仓库根目录的 TanStack Start 应用提供。
 
 - `ipx.ee`
   - `curl ipx.ee` 返回当前连接的公网 IP
-  - 浏览器访问时展示一个极简页面，并自动探测 `v4.ipx.ee` / `v6.ipx.ee`
+  - 浏览器请求由 Caddy 转发到 Node SSR；Go 内置页面仅作为直接访问后端时的降级响应
 - `v4.ipx.ee`
   - 只返回 IPv4 文本 IP
 - `v6.ipx.ee`
