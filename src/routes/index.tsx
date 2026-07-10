@@ -23,7 +23,7 @@ import { LoadingSpinner } from '../components/loading-spinner'
 import { MapModal, type MapPoint } from '../components/map-modal'
 import { ThemeToggle } from '../components/theme-toggle'
 import { TopbarIconLink } from '../components/topbar-icon-link'
-import { defaultLanguage, languagePathByCode, type LanguageCode } from '../lib/languages'
+import { defaultLanguage, flagUrl, languagePathByCode, type LanguageCode } from '../lib/languages'
 import { fieldLabel, t, type FieldLabelKey } from '../lib/ui-messages'
 
 type GeoPayload = {
@@ -631,10 +631,10 @@ function SignalBadges({
 }
 
 function flagSrc(flag?: string, code?: string) {
-  if (flag) return flag
   const normalized = code?.trim().toLowerCase()
-  if (!normalized || normalized.length !== 2) return null
-  return `https://flagcdn.com/${normalized}.svg`
+  if (normalized?.length === 2) return flagUrl(normalized)
+  if (!flag) return null
+  return flag.replace('https://flagcdn.com/', 'https://flagcdn.io/flags/4x3/')
 }
 
 function CountryFlag({ flag, code }: { flag?: string; code?: string }) {

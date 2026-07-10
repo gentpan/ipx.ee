@@ -1,5 +1,5 @@
 import type { MouseEvent } from 'react'
-import { languagePath, languages, type LanguageCode } from '../lib/languages'
+import { flagUrl, languagePath, languages, type LanguageCode } from '../lib/languages'
 
 type LanguageMenuProps = {
   lang: LanguageCode
@@ -37,7 +37,7 @@ export function LanguageMenu({
   return (
     <details className="language-menu">
       <summary className="language-trigger glass-chrome" aria-label={label}>
-        <img src={`https://flagcdn.com/${activeLanguage.flag}.svg`} alt="" />
+        <img src={flagUrl(activeLanguage.flag)} alt="" />
         <span>{activeLanguage.label}</span>
       </summary>
       <div className="language-menu-panel" role="menu" aria-label={label}>
@@ -50,7 +50,7 @@ export function LanguageMenu({
             aria-checked={language.code === lang}
             onClick={(event) => selectLanguage(language.code, event)}
           >
-            <img src={`https://flagcdn.com/${language.flag}.svg`} alt="" />
+            <img src={flagUrl(language.flag)} alt="" />
             <span>{language.label}</span>
           </a>
         ))}

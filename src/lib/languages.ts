@@ -19,6 +19,10 @@ export const languages: Array<{
 
 export const defaultLanguage: LanguageCode = 'en'
 
+export function flagUrl(countryCode: string) {
+  return `https://flagcdn.io/flags/4x3/${countryCode.trim().toLowerCase()}.svg`
+}
+
 export const languageLabels = Object.fromEntries(
   languages.map((language) => [language.code, language.label]),
 ) as Record<LanguageCode, string>

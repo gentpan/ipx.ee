@@ -648,7 +648,7 @@ func mapGeoPayload(lookup string, payload map[string]any) geoPayload {
 	countryCode := strings.ToUpper(strings.TrimSpace(toString(payload["countryCode"])))
 	flag := ""
 	if countryCode != "" {
-		flag = "https://flagcdn.io/" + strings.ToLower(countryCode) + ".svg"
+		flag = "https://flagcdn.io/flags/4x3/" + strings.ToLower(countryCode) + ".svg"
 	}
 
 	return geoPayload{
@@ -1692,7 +1692,7 @@ const siteTemplate = `<!doctype html>
           if (flagURL || countryCode) {
             const flag = document.createElement("img");
             flag.className = "geo-flag";
-            flag.src = flagURL || ("https://flagcdn.io/" + countryCode + ".svg");
+            flag.src = flagURL || ("https://flagcdn.io/flags/4x3/" + countryCode + ".svg");
             flag.alt = value;
             flag.loading = "lazy";
             countryWrap.appendChild(flag);
