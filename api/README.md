@@ -1,4 +1,4 @@
-# ipx.ee Go Backend
+# ipx.ee API
 
 Go 服务负责 IP 文本响应与 GeoIP JSON API。浏览器前端由仓库根目录的 TanStack Start 应用提供。
 
@@ -30,18 +30,18 @@ Go 服务负责 IP 文本响应与 GeoIP JSON API。浏览器前端由仓库根�
 ## 构建
 
 ```bash
-cd go-backend
-go build -o backend .
+cd api
+go build -o api .
 ```
 
 ## 运行
 
 ```bash
-cd go-backend
+cd api
 PORT=18080 \
 PROJECT_ROOT="$(pwd)/.." \
 IP_API_KEY="replace-with-your-ip-api-key" \
-./backend
+./api
 ```
 
 ## DNS

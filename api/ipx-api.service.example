@@ -1,16 +1,16 @@
 [Unit]
-Description=ipx.ee Go service
+Description=ipx.ee API service
 After=network.target
 
 [Service]
 Type=simple
 User=www-data
 Group=www-data
-WorkingDirectory=/opt/ipx.ee/go-backend
+WorkingDirectory=/opt/ipx.ee/api
 Environment=PORT=18080
 Environment=PROJECT_ROOT=/opt/ipx.ee
-EnvironmentFile=-/opt/ipx.ee/go-backend/.env
-ExecStart=/opt/ipx.ee/go-backend/backend
+EnvironmentFile=-/opt/ipx.ee/api/.env
+ExecStart=/opt/ipx.ee/api/api
 Restart=always
 RestartSec=2
 

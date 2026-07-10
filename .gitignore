@@ -5,8 +5,7 @@
 *.log
 .gocache/
 release/
-go-backend/backend
-go-backend/go-backend
+api/api
 node_modules/
 dist/
 data/geoip-cache/

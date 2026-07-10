@@ -56,7 +56,7 @@ IPX.EE 提供公网 IPv4 / IPv6 探测、IP 或域名查询、ASN / ISP / GeoIP 
 npm install
 
 # 终端 1：Go API
-cd go-backend
+cd api
 PORT=18080 PROJECT_ROOT=$(pwd)/.. go run main.go
 
 # 终端 2：前端
@@ -98,7 +98,7 @@ TanStack Start 默认把 `/api/*` 代理到 `http://127.0.0.1:18080`。可通过
 ```bash
 npm run typecheck
 npm run build
-cd go-backend && go test ./...
+cd api && go test ./...
 ```
 
 生产前端由 `server.mjs` 启动，默认监听 `127.0.0.1:3012`：

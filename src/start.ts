@@ -30,7 +30,7 @@ const proxyGeoApi = createMiddleware({ type: 'request' }).server(
         {
           ok: false,
           error:
-            'GeoIP API backend is unavailable. Start Go backend: cd go-backend && PORT=18080 PROJECT_ROOT=$(pwd)/.. go run main.go',
+            'GeoIP API backend is unavailable. Start it with: cd api && PORT=18080 PROJECT_ROOT=$(pwd)/.. go run main.go',
         },
         { status: 503 },
       )
