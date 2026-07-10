@@ -12,12 +12,6 @@
   <img src="https://img.shields.io/badge/license-MIT-brightgreen?style=for-the-badge" alt="License">
 </p>
 
-<p>
-  <a href="https://ipx.ee">网站</a>
-  ·
-  <a href="https://api.ipx.ee">API</a>
-</p>
-
 </div>
 
 ---
