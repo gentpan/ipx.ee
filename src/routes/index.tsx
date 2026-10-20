@@ -75,7 +75,7 @@ type DisplayRow = {
 }
 
 const apiBase = import.meta.env.VITE_API_ORIGIN || ''
-const v6Host = (import.meta.env.VITE_V6_HOST as string | undefined) || 'v6.ipx.ee'
+const ipEchoUrls = { v4: 'https://v4.mypublicipnow.com/', v6: 'https://v6.mypublicipnow.com/' } as const
 
 /** Default Geo fields for homepage visitor IP + lookup. */
 const homeFields =
@@ -116,9 +116,8 @@ export function HomePage({ initialLang = defaultLanguage }: HomePageProps) {
     setIpv4({ status: 'loading', data: null, error: '' })
     setIpv6({ status: 'loading', data: null, error: '' })
 
-    // Main site is IPv4-only; visitor IPv4 via /api/ip. v4.ipx.ee remains API-only.
-    const ipParams = new URLSearchParams({ fields: homeFields, lang })
-    void fetchGeo(`/api/ip?${ipParams}`)
+    // Browser echo identifies each family; this project's API supplies GeoIP.
+    void fetchStackGeo('v4', homeFields, lang)
       .then((data) => {
         if (cancelled) return
         setIpv4({ status: 'ready', data, error: '' })
@@ -128,7 +127,7 @@ export function HomePage({ initialLang = defaultLanguage }: HomePageProps) {
         setIpv4({ status: 'error', data: null, error: error.message })
       })
 
-    void fetchStackGeo(v6Host, homeFields, lang)
+    void fetchStackGeo('v6', homeFields, lang)
       .then((data) => {
         if (cancelled) return
         setIpv6({ status: 'ready', data, error: '' })
@@ -523,17 +522,17 @@ async function fetchGeo(path: string): Promise<GeoPayload> {
   return parseGeoResponse(response)
 }
 
-async function fetchStackGeo(host: string, fields: string, lang: LanguageCode) {
-  const params = new URLSearchParams({
-    format: 'json',
-    fields,
-    lang,
+async function fetchStackGeo(family: 'v4' | 'v6', fields: string, lang: LanguageCode) {
+  const response = await fetch(ipEchoUrls[family], {
+    credentials: 'omit', cache: 'no-store', signal: AbortSignal.timeout(8000),
   })
-  const response = await fetch(`https://${host}/?${params}`, {
-    headers: { Accept: 'application/json' },
-    cache: 'no-store',
-  })
-  return parseGeoResponse(response)
+  if (!response.ok) throw new Error(`IPv${family === 'v4' ? 4 : 6} unavailable`)
+  const ip = (await response.text()).trim()
+  if (!ip || (family === 'v6' ? !ip.includes(':') : !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(ip))) {
+    throw new Error(`${family} unavailable`)
+  }
+  const params = new URLSearchParams({ fields, lang })
+  return fetchGeo(`/api/lookup/${encodeURIComponent(ip)}?${params}`)
 }
 
 async function parseGeoResponse(response: Response): Promise<GeoPayload> {

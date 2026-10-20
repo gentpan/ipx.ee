@@ -38,8 +38,8 @@ IPX.EE 提供公网 IPv4 / IPv6 探测、IP 或域名查询、ASN / ISP / GeoIP 
 
 - `ipx.ee`：浏览器访问 React SSR 页面；命令行访问返回当前公网 IP。
 - `api.ipx.ee`：公开 GeoIP JSON API。
-- `v4.ipx.ee`：仅通过 IPv4 提供纯文本地址。
-- `v6.ipx.ee`：仅通过 IPv6 提供纯文本地址。
+- `v4.ipx.ee`：保留历史 API 兼容；新客户端使用共享 IPv4 回显。
+- `v6.ipx.ee`：保留历史 API 兼容；新客户端使用共享 IPv6 回显。
 - 前端 `/api/*`：由 TanStack Start 中间件代理到本机 Go 服务。
 
 ---
@@ -107,3 +107,5 @@ npm start
 ## License
 
 MIT
+
+2026-10-17 已上线：浏览器分别从 `https://v4.mypublicipnow.com/` 与 `https://v6.mypublicipnow.com/` 读取纯文本，再将地址交给本项目 `/api/lookup/{ip}` 查询归属地。`VITE_V6_HOST` 不再影响客户端地址。当前生产前端源码/产物：`/opt/ipx.ee/web/source-shared-echo-20261017`，`/opt/ipx.ee/web/current` 指向它；`ipx-web` 监听 3012。API 的 V4_HOST/V6_HOST 是兼容请求的入口主机名，不是客户端回显配置。
