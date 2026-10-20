@@ -108,4 +108,4 @@ npm start
 
 MIT
 
-2026-10-17 已上线：浏览器分别从 `https://v4.mypublicipnow.com/` 与 `https://v6.mypublicipnow.com/` 读取纯文本，再将地址交给本项目 `/api/lookup/{ip}` 查询归属地。`VITE_V6_HOST` 不再影响客户端地址。当前生产前端源码/产物：`/opt/ipx.ee/web/source-shared-echo-20261017`，`/opt/ipx.ee/web/current` 指向它；`ipx-web` 监听 3012。API 的 V4_HOST/V6_HOST 是兼容请求的入口主机名，不是客户端回显配置。
+2026-10-17 已上线：浏览器分别从 `https://v4.mypublicipnow.com/` 与 `https://v6.mypublicipnow.com/` 读取纯文本，再将地址交给本项目 `/api/lookup/{ip}` 查询归属地。`VITE_V6_HOST` 不再影响客户端地址。当前生产前端源码/产物：`/opt/ipx.ee/web/source-umami-stats-20261021`（2026-10-21 在 shared-echo-20261017 基础上只把 Umami 脚本改为 `https://stats.cleanip.io/script.js`），`/opt/ipx.ee/web/current` 指向它；`ipx-web` 监听 3012。API 的 V4_HOST/V6_HOST 是兼容请求的入口主机名，不是客户端回显配置。

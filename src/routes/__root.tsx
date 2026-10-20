@@ -38,6 +38,11 @@ export const Route = createRootRoute({
     ],
     scripts: [
       {
+        src: 'https://stats.cleanip.io/script.js',
+        defer: true,
+        'data-website-id': 'e7e85005-1a72-4ce4-b9e1-691e91e82ccc',
+      },
+      {
         children: themeBootScript,
       },
     ],
